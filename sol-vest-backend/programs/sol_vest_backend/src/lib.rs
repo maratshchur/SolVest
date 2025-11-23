@@ -1,8 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-// ЗАМЕНИТЕ НА ВАШ ID ПОСЛЕ anchor build
 declare_id!("H14JDTx8fkS9TktMfyuuwVgr1RxoTw6C3AvDuXz1Tvq6");
+
+const VOTING_PERIOD_SECONDS: i64 = 172_800; // 2 дня
 
 #[program]
 pub mod sol_vest_backend {
@@ -22,15 +23,19 @@ pub mod sol_vest_backend {
     pub fn create_campaign(
         ctx: Context<CreateCampaign>, 
         total_goal: u64,
-        milestones: Vec<MilestoneInput>,
-        duration_seconds: i64 // Добавили срок жизни кампании
+        milestones: Vec<MilestoneInput>, 
+        fundraising_duration: i64,       
     ) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
-        
+        let clock = Clock::get()?;
+
         let sum: u64 = milestones.iter().map(|m| m.goal_amount).sum();
         require!(sum == total_goal, CampaignError::MilestoneSumMismatch);
 
-        let clock = Clock::get()?; // Получаем текущее время
+        for m in &milestones {
+            require!(m.name.len() <= 50, CampaignError::StringTooLong);
+            require!(m.description.len() <= 200, CampaignError::StringTooLong);
+        }
 
         campaign.creator = *ctx.accounts.creator.key;
         campaign.usdc_mint = ctx.accounts.usdc_mint.key();
@@ -38,13 +43,20 @@ pub mod sol_vest_backend {
         campaign.raised_amount = 0;
         campaign.state = CampaignState::Funding;
         campaign.milestone_idx = 0;
-        campaign.deadline = clock.unix_timestamp + duration_seconds; // Устанавливаем дедлайн
+        campaign.voting_duration = VOTING_PERIOD_SECONDS; 
         
+        campaign.deadline = clock.unix_timestamp + fundraising_duration;
+        campaign.current_milestone_deadline = 0; 
+
         campaign.milestones = milestones.into_iter().map(|m| Milestone {
+            name: m.name,
+            description: m.description,
             goal_amount: m.goal_amount,
+            duration: m.duration,
             state: MilestoneState::Pending,
             votes_for: 0,
             votes_against: 0,
+            vote_deadline: 0,
         }).collect();
 
         Ok(())
@@ -54,11 +66,9 @@ pub mod sol_vest_backend {
         let campaign = &mut ctx.accounts.campaign;
         require!(campaign.state == CampaignState::Funding, CampaignError::CampaignNotActive);
         
-        // Проверка времени
         let clock = Clock::get()?;
         require!(clock.unix_timestamp < campaign.deadline, CampaignError::DeadlineExceeded);
 
-        // Перевод токенов (CPI)
         let cpi_accounts = Transfer {
             from: ctx.accounts.investor_token_account.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
@@ -78,6 +88,11 @@ pub mod sol_vest_backend {
 
         if campaign.raised_amount >= campaign.total_goal {
             campaign.state = CampaignState::Active;
+            
+            // Запускаем таймер первого этапа
+            if !campaign.milestones.is_empty() {
+                campaign.current_milestone_deadline = clock.unix_timestamp + campaign.milestones[0].duration;
+            }
         }
 
         Ok(())
@@ -91,7 +106,12 @@ pub mod sol_vest_backend {
         require!(campaign.state == CampaignState::Active, CampaignError::CampaignNotActive);
         require!(campaign.milestones[idx].state == MilestoneState::Pending, CampaignError::MilestoneNotPending);
 
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp < campaign.current_milestone_deadline, CampaignError::MilestoneExpired);
+
         campaign.milestones[idx].state = MilestoneState::Voting;
+        campaign.milestones[idx].vote_deadline = clock.unix_timestamp + campaign.voting_duration;
+
         Ok(())
     }
 
@@ -101,11 +121,14 @@ pub mod sol_vest_backend {
 
         require!(campaign.milestones[idx].state == MilestoneState::Voting, CampaignError::MilestoneNotVoting);
         
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp < campaign.milestones[idx].vote_deadline, CampaignError::VotingEnded);
+
         let vote_record = &mut ctx.accounts.vote_record;
         vote_record.voter = *ctx.accounts.voter.key;
         
         let weight = ctx.accounts.contribution.amount;
-        require!(weight > 0, CampaignError::NoContribution); // Нельзя голосовать без вклада
+        require!(weight > 0, CampaignError::NoContribution);
         
         if vote_for {
             campaign.milestones[idx].votes_for += weight;
@@ -121,19 +144,19 @@ pub mod sol_vest_backend {
         let idx = campaign.milestone_idx as usize;
         require!(campaign.milestones[idx].state == MilestoneState::Voting, CampaignError::MilestoneNotVoting);
 
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp >= campaign.milestones[idx].vote_deadline, CampaignError::VotingNotEnded);
+
         let m = &campaign.milestones[idx];
         let total_votes = m.votes_for + m.votes_against;
         
-        // Проверка КВОРУМА: должно проголосовать хотя бы 10% от собранных средств
         let quorum = campaign.raised_amount / 10; 
         if total_votes < quorum {
-             // Кворум не набран -> Провал
              campaign.state = CampaignState::Failed;
              return Ok(());
         }
         
         if m.votes_for > m.votes_against {
-            // УСПЕХ
             let amount = m.goal_amount;
             let fee = (amount as u128 * ctx.accounts.protocol.protocol_fee_basis_points as u128 / 10000) as u64;
             let creator_amount = amount - fee;
@@ -145,7 +168,6 @@ pub mod sol_vest_backend {
             ];
             let signer = &[&seeds[..]];
 
-            // Перевод комиссии
             let cpi_accounts_fee = Transfer {
                 from: ctx.accounts.vault.to_account_info(),
                 to: ctx.accounts.fee_destination.to_account_info(),
@@ -155,7 +177,6 @@ pub mod sol_vest_backend {
             let cpi_ctx_fee = CpiContext::new_with_signer(cpi_program.clone(), cpi_accounts_fee, signer);
             token::transfer(cpi_ctx_fee, fee)?;
             
-            // Перевод создателю
             let cpi_accounts_creator = Transfer {
                 from: ctx.accounts.vault.to_account_info(),
                 to: ctx.accounts.creator_token_account.to_account_info(),
@@ -167,48 +188,48 @@ pub mod sol_vest_backend {
             campaign.milestones[idx].state = MilestoneState::Completed;
             campaign.milestone_idx += 1;
             
-            if campaign.milestone_idx as usize >= campaign.milestones.len() {
+            if (campaign.milestone_idx as usize) < campaign.milestones.len() {
+                let next_duration = campaign.milestones[campaign.milestone_idx as usize].duration;
+                campaign.current_milestone_deadline = clock.unix_timestamp + next_duration;
+            } else {
                 campaign.state = CampaignState::Completed;
             }
 
         } else {
-            // ПРОВАЛ ГОЛОСОВАНИЯ
             campaign.state = CampaignState::Failed;
         }
 
         Ok(())
     }
 
-    // --- НОВАЯ ФУНКЦИЯ: ВОЗВРАТ СРЕДСТВ (REFUND) ---
     pub fn claim_refund(ctx: Context<ClaimRefund>) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
-        // Возврат возможен только если кампания провалена ИЛИ истек срок, а цель не достигнута
         let clock = Clock::get()?;
-        let is_deadline_failed = campaign.state == CampaignState::Funding && clock.unix_timestamp > campaign.deadline;
-        let is_voting_failed = campaign.state == CampaignState::Failed;
+        
+        let is_fundraising_expired = campaign.state == CampaignState::Funding && clock.unix_timestamp > campaign.deadline;
+        let is_failed_state = campaign.state == CampaignState::Failed;
+        let is_milestone_expired = campaign.state == CampaignState::Active && clock.unix_timestamp > campaign.current_milestone_deadline;
 
-        require!(is_deadline_failed || is_voting_failed, CampaignError::RefundNotAvailable);
+        require!(is_fundraising_expired || is_failed_state || is_milestone_expired, CampaignError::RefundNotAvailable);
 
-        // Если мы здесь, значит кампания провалена.
-        // Если статус был Funding, меняем на Failed, чтобы другие тоже могли вернуть
-        if campaign.state == CampaignState::Funding {
+        if campaign.state != CampaignState::Failed {
             campaign.state = CampaignState::Failed;
         }
 
         let contribution = &mut ctx.accounts.contribution;
         require!(contribution.amount > 0, CampaignError::NoContribution);
 
-        // Логика расчета доли: 
-        // (Твой вклад / Всего собрано) * Текущий баланс хранилища
         let vault_balance = ctx.accounts.vault.amount;
         let total_raised = campaign.raised_amount;
 
-        // Используем u128 для точности умножения
+        if total_raised == 0 {
+             return Err(CampaignError::NoContribution.into());
+        }
+
         let refund_amount = (contribution.amount as u128)
             .checked_mul(vault_balance as u128).unwrap()
             .checked_div(total_raised as u128).unwrap() as u64;
 
-        // Подпись Vault
         let seeds = &[
             b"vault",
             campaign.to_account_info().key.as_ref(),
@@ -216,7 +237,6 @@ pub mod sol_vest_backend {
         ];
         let signer = &[&seeds[..]];
 
-        // Перевод средств инвестору
         let cpi_accounts = Transfer {
             from: ctx.accounts.vault.to_account_info(),
             to: ctx.accounts.investor_token_account.to_account_info(),
@@ -227,7 +247,6 @@ pub mod sol_vest_backend {
         
         token::transfer(cpi_ctx, refund_amount)?;
 
-        // Обнуляем вклад, чтобы нельзя было вывести дважды
         contribution.amount = 0;
 
         Ok(())
@@ -320,12 +339,17 @@ pub struct Vote<'info> {
 pub struct WithdrawFunds<'info> {
     #[account(seeds = [b"protocol"], bump)]
     pub protocol: Account<'info, Protocol>,
-    #[account(mut, has_one = creator)]
+    #[account(mut)]
     pub campaign: Account<'info, Campaign>,
     #[account(mut, seeds = [b"vault", campaign.key().as_ref()], bump)]
     pub vault: Account<'info, TokenAccount>,
     #[account(mut)]
-    pub creator: Signer<'info>,
+    pub caller: Signer<'info>, 
+    
+    /// CHECK: Checked via constraint
+    #[account(mut, constraint = creator.key() == campaign.creator)]
+    pub creator: UncheckedAccount<'info>, 
+    
     #[account(mut)]
     pub creator_token_account: Account<'info, TokenAccount>,
     #[account(mut, address = protocol.fee_destination)]
@@ -333,7 +357,6 @@ pub struct WithdrawFunds<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-// НОВЫЙ КОНТЕКСТ ДЛЯ ВОЗВРАТА
 #[derive(Accounts)]
 pub struct ClaimRefund<'info> {
     #[account(mut)]
@@ -341,7 +364,7 @@ pub struct ClaimRefund<'info> {
     #[account(mut, seeds = [b"vault", campaign.key().as_ref()], bump)]
     pub vault: Account<'info, TokenAccount>,
     #[account(
-        mut, // Изменяем contribution (обнуляем amount)
+        mut, 
         seeds = [b"contribution", campaign.key().as_ref(), investor.key().as_ref()], 
         bump
     )]
@@ -354,7 +377,8 @@ pub struct ClaimRefund<'info> {
     pub system_program: Program<'info, System>,
 }
 
-// --- ДАННЫЕ ---
+// --- СТРУКТУРЫ ДАННЫХ ---
+
 #[account]
 pub struct Protocol {
     pub owner: Pubkey,
@@ -373,6 +397,8 @@ pub struct Campaign {
     pub milestone_idx: u8,
     pub milestones: Vec<Milestone>,
     pub deadline: i64, 
+    pub voting_duration: i64, 
+    pub current_milestone_deadline: i64, 
 }
 
 #[account]
@@ -391,15 +417,22 @@ pub struct VoteRecord {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
 pub struct Milestone {
+    pub name: String,
+    pub description: String,
     pub goal_amount: u64,
+    pub duration: i64, 
     pub state: MilestoneState,
     pub votes_for: u64,
     pub votes_against: u64,
+    pub vote_deadline: i64, 
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
 pub struct MilestoneInput {
+    pub name: String,
+    pub description: String,
     pub goal_amount: u64,
+    pub duration: i64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
@@ -417,4 +450,8 @@ pub enum CampaignError {
     #[msg("Deadline exceeded.")] DeadlineExceeded,
     #[msg("You have no contribution.")] NoContribution,
     #[msg("Refund is not available yet.")] RefundNotAvailable,
+    #[msg("Voting period has ended.")] VotingEnded, 
+    #[msg("Voting period has not ended yet.")] VotingNotEnded, 
+    #[msg("String too long.")] StringTooLong,
+    #[msg("Milestone deadline passed.")] MilestoneExpired, 
 }
