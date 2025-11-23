@@ -1,21 +1,19 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-// 1. ПОСЛЕ ПЕРВОГО 'anchor build' ЗАМЕНИТЕ ЭТОТ ID НА ТОТ, ЧТО ВЫДАСТ ТЕРМИНАЛ
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+// ЗАМЕНИТЕ НА ВАШ ID ПОСЛЕ anchor build
+declare_id!("H14JDTx8fkS9TktMfyuuwVgr1RxoTw6C3AvDuXz1Tvq6");
 
 #[program]
-pub mod sol_vest {
+pub mod sol_vest_backend {
     use super::*;
 
     // --- АДМИНКА ---
-    // Инициализация протокола (комиссия, владелец)
     pub fn initialize_protocol(ctx: Context<InitializeProtocol>, protocol_fee: u16) -> Result<()> {
         let protocol = &mut ctx.accounts.protocol;
         protocol.owner = *ctx.accounts.owner.key;
         protocol.paused = false;
-        protocol.protocol_fee_basis_points = protocol_fee; // 200 = 2%
-        // Комиссии будут капать на токен-аккаунт, переданный сюда
+        protocol.protocol_fee_basis_points = protocol_fee; 
         protocol.fee_destination = ctx.accounts.fee_destination.key();
         Ok(())
     }
@@ -28,7 +26,6 @@ pub mod sol_vest {
     ) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
         
-        // Простая проверка: сумма этапов должна быть равна цели
         let sum: u64 = milestones.iter().map(|m| m.goal_amount).sum();
         require!(sum == total_goal, CampaignError::MilestoneSumMismatch);
 
@@ -39,7 +36,6 @@ pub mod sol_vest {
         campaign.state = CampaignState::Funding;
         campaign.milestone_idx = 0;
         
-        // Записываем этапы
         campaign.milestones = milestones.into_iter().map(|m| Milestone {
             goal_amount: m.goal_amount,
             state: MilestoneState::Pending,
@@ -51,21 +47,31 @@ pub mod sol_vest {
     }
 
     pub fn invest(ctx: Context<Invest>, amount: u64) -> Result<()> {
+        // 1. Сначала подготавливаем данные, не блокируя campaign надолго
+        // Но здесь нам нужно проверить state, поэтому берем ссылку
         let campaign = &mut ctx.accounts.campaign;
         require!(campaign.state == CampaignState::Funding, CampaignError::CampaignNotActive);
 
-        // Перевод токенов от инвестора в хранилище (Vault)
-        token::transfer(ctx.accounts.transfer_ctx(), amount)?;
+        // 2. Выполняем перевод токенов (CPI)
+        // Мы создаем контекст вручную здесь, чтобы избежать конфликта заимствований
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.investor_token_account.to_account_info(),
+            to: ctx.accounts.vault.to_account_info(),
+            authority: ctx.accounts.investor.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        
+        token::transfer(cpi_ctx, amount)?;
 
+        // 3. Обновляем состояние кампании
         campaign.raised_amount += amount;
 
-        // Запись о вкладе
         let contribution = &mut ctx.accounts.contribution;
         contribution.investor = *ctx.accounts.investor.key;
         contribution.campaign = campaign.key();
         contribution.amount += amount;
 
-        // Если собрали всю сумму — активируем
         if campaign.raised_amount >= campaign.total_goal {
             campaign.state = CampaignState::Active;
         }
@@ -74,7 +80,6 @@ pub mod sol_vest {
     }
 
     // --- УПРАВЛЕНИЕ ЭТАПАМИ ---
-    // Создатель говорит: "Я сделал работу, давайте голосовать"
     pub fn submit_milestone(ctx: Context<ManageMilestone>) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
         let idx = campaign.milestone_idx as usize;
@@ -86,18 +91,15 @@ pub mod sol_vest {
         Ok(())
     }
 
-    // Инвестор голосует
     pub fn vote(ctx: Context<Vote>, vote_for: bool) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
         let idx = campaign.milestone_idx as usize;
 
         require!(campaign.milestones[idx].state == MilestoneState::Voting, CampaignError::MilestoneNotVoting);
         
-        // Записываем, что этот человек проголосовал (чтобы не голосовал дважды)
         let vote_record = &mut ctx.accounts.vote_record;
         vote_record.voter = *ctx.accounts.voter.key;
         
-        // Сила голоса равна сумме вклада
         let weight = ctx.accounts.contribution.amount;
         
         if vote_for {
@@ -109,37 +111,45 @@ pub mod sol_vest {
         Ok(())
     }
 
-    // Финализация этапа и выплата (если успешно)
     pub fn finalize_milestone(ctx: Context<WithdrawFunds>) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
         let idx = campaign.milestone_idx as usize;
         require!(campaign.milestones[idx].state == MilestoneState::Voting, CampaignError::MilestoneNotVoting);
 
         let m = &campaign.milestones[idx];
-        let total_votes = m.votes_for + m.votes_against;
         
-        // Упрощенная логика: Если ЗА > ПРОТИВ, то успех
         if m.votes_for > m.votes_against {
-            // Рассчитываем комиссию и выплату
             let amount = m.goal_amount;
             let fee = (amount as u128 * ctx.accounts.protocol.protocol_fee_basis_points as u128 / 10000) as u64;
             let creator_amount = amount - fee;
 
-            // Подпись от имени Vault (PDA)
             let seeds = &[
                 b"vault",
                 campaign.to_account_info().key.as_ref(),
-                &[*ctx.bumps.get("vault").unwrap()]
+                &[ctx.bumps.vault] 
             ];
             let signer = &[&seeds[..]];
 
-            // 1. Отправляем комиссию протоколу
-            token::transfer(ctx.accounts.transfer_fee_ctx().with_signer(signer), fee)?;
+            // 1. Перевод комиссии (Manual CPI)
+            let cpi_accounts_fee = Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.fee_destination.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+            };
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx_fee = CpiContext::new_with_signer(cpi_program.clone(), cpi_accounts_fee, signer);
+            token::transfer(cpi_ctx_fee, fee)?;
             
-            // 2. Отправляем деньги создателю
-            token::transfer(ctx.accounts.transfer_creator_ctx().with_signer(signer), creator_amount)?;
+            // 2. Перевод создателю (Manual CPI)
+            let cpi_accounts_creator = Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.creator_token_account.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+            };
+            let cpi_ctx_creator = CpiContext::new_with_signer(cpi_program, cpi_accounts_creator, signer);
+            token::transfer(cpi_ctx_creator, creator_amount)?;
 
-            // Переходим к следующему этапу
+            // Обновление состояния
             campaign.milestones[idx].state = MilestoneState::Completed;
             campaign.milestone_idx += 1;
             
@@ -148,7 +158,6 @@ pub mod sol_vest {
             }
 
         } else {
-            // Если проиграли — кампания провалена
             campaign.state = CampaignState::Failed;
         }
 
@@ -171,7 +180,7 @@ pub struct InitializeProtocol<'info> {
 
 #[derive(Accounts)]
 pub struct CreateCampaign<'info> {
-    #[account(init, payer = creator, space = 9000)] // Большой запас места
+    #[account(init, payer = creator, space = 9000)]
     pub campaign: Account<'info, Campaign>,
     #[account(
         init, 
@@ -211,15 +220,7 @@ pub struct Invest<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
-impl<'info> Invest<'info> {
-    fn transfer_ctx(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
-        CpiContext::new(self.token_program.to_account_info(), Transfer {
-            from: self.investor_token_account.to_account_info(),
-            to: self.vault.to_account_info(),
-            authority: self.investor.to_account_info(),
-        })
-    }
-}
+// УДАЛИЛИ IMPL BLOCK для Invest, чтобы избежать ошибки заимствования
 
 #[derive(Accounts)]
 pub struct ManageMilestone<'info> {
@@ -263,22 +264,7 @@ pub struct WithdrawFunds<'info> {
     pub fee_destination: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
-impl<'info> WithdrawFunds<'info> {
-    fn transfer_creator_ctx(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
-        CpiContext::new(self.token_program.to_account_info(), Transfer {
-            from: self.vault.to_account_info(),
-            to: self.creator_token_account.to_account_info(),
-            authority: self.vault.to_account_info(),
-        })
-    }
-    fn transfer_fee_ctx(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
-        CpiContext::new(self.token_program.to_account_info(), Transfer {
-            from: self.vault.to_account_info(),
-            to: self.fee_destination.to_account_info(),
-            authority: self.vault.to_account_info(),
-        })
-    }
-}
+// УДАЛИЛИ IMPL BLOCK для WithdrawFunds, чтобы избежать ошибки заимствования
 
 // --- ДАННЫЕ ---
 #[account]
