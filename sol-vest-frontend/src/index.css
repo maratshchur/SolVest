@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 1. Импортируем стили библиотеки (обязательно!) */
+@import '@solana/wallet-adapter-react-ui/styles.css';
+
+/* 2. Глобальные стили страницы */
+body {
+    @apply bg-slate-950 text-white antialiased;
+}
+
+/* =========================================
+   ФИКСЫ ДЛЯ МОДАЛЬНОГО ОКНА SOLANA
+   ========================================= */
+
+/* 1. Исправляем фон и позиционирование (чтобы окно не пропадало) */
+.wallet-adapter-modal-overlay {
+    background-color: rgba(0, 0, 0, 0.7) !important;
+    backdrop-filter: blur(8px) !important; /* Размытие фона */
+    z-index: 10000 !important;
+    position: fixed !important;
+    top: 0; left: 0; right: 0; bottom: 0;
+}
+
+.wallet-adapter-modal-wrapper {
+    z-index: 10001 !important;
+    position: fixed !important;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* 2. Стили самого окна (Карточка) */
+.wallet-adapter-modal-container {
+    background: #1e293b !important; /* Темно-синий фон (slate-800) */
+    border: 1px solid #334155 !important; /* Рамка */
+    border-radius: 1rem !important;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5) !important;
+    width: 100% !important;
+    max-width: 400px !important;
+    padding: 1.5rem !important;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+}
+
+/* 3. Заголовок "Connect a wallet..." */
+.wallet-adapter-modal-title {
+    font-size: 1.25rem !important;
+    font-weight: 600 !important;
+    color: #fff !important;
+    padding: 0 !important;
+    margin-bottom: 1.5rem !important;
+    text-align: center !important;
+    display: block !important;
+}
+
+/* 4. Кнопка закрытия (Крестик) */
+.wallet-adapter-modal-button-close {
+    background-color: #334155 !important; /* Цвет фона кнопки */
+    border-radius: 50% !important;
+    width: 32px !important;
+    height: 32px !important;
+    padding: 6px !important;
+    position: absolute !important;
+    top: 15px !important;
+    right: 15px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: background-color 0.2s;
+}
+
+.wallet-adapter-modal-button-close:hover {
+    background-color: #475569 !important;
+}
+
+.wallet-adapter-modal-button-close svg {
+    width: 14px !important;
+    height: 14px !important;
+    fill: #fff !important;
+}
+
+/* 5. Список кошельков */
+.wallet-adapter-modal-list {
+    margin: 0 !important;
+    padding: 0 !important;
+    list-style: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.75rem !important;
+}
+
+/* 6. Кнопка конкретного кошелька (например, Phantom) */
+.wallet-adapter-button {
+    width: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important; /* Текст слева, иконка справа */
+    background-color: #0f172a !important; /* slate-900 */
+    height: auto !important;
+    padding: 12px 16px !important;
+    border-radius: 0.75rem !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    color: #e2e8f0 !important;
+    border: 1px solid transparent !important;
+    transition: all 0.2s !important;
+}
+
+.wallet-adapter-button:hover {
+    background-color: #1e293b !important;
+    border-color: #3b82f6 !important; /* Синяя рамка при наведении */
+}
+
+/* 7. ИСПРАВЛЕНИЕ ГИГАНТСКОЙ ИКОНКИ */
+.wallet-adapter-button-start-icon, 
+.wallet-adapter-button-end-icon {
+    width: 28px !important;
+    height: 28px !important;
+    margin: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+.wallet-adapter-button img {
+    width: 28px !important;
+    height: 28px !important;
+    object-fit: contain !important;
+}
+
+/* Текст кнопки (название кошелька) */
+.wallet-adapter-button span {
+    margin-right: auto !important; /* Прижимает текст влево */
+    margin-left: 10px !important;
+}
