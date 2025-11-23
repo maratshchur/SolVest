@@ -1,5 +1,5 @@
 {
-  "address": "H14JDTx8fkS9TktMfyuuwVgr1RxoTw6C3AvDuXz1Tvq6",
+  "address": "G4nTun1PpGPed7qGkchBGFf4LJkYohExFCaDVeBVZEen",
   "metadata": {
     "name": "sol_vest_backend",
     "version": "0.1.0",
@@ -176,11 +176,7 @@
           }
         },
         {
-          "name": "duration_seconds",
-          "type": "i64"
-        },
-        {
-          "name": "voting_duration_seconds",
+          "name": "fundraising_duration",
           "type": "i64"
         }
       ]
@@ -616,6 +612,16 @@
       "code": 6008,
       "name": "VotingNotEnded",
       "msg": "Voting period has not ended yet."
+    },
+    {
+      "code": 6009,
+      "name": "StringTooLong",
+      "msg": "String too long."
+    },
+    {
+      "code": 6010,
+      "name": "MilestoneExpired",
+      "msg": "Milestone deadline passed."
     }
   ],
   "types": [
@@ -669,6 +675,10 @@
           {
             "name": "voting_duration",
             "type": "i64"
+          },
+          {
+            "name": "current_milestone_deadline",
+            "type": "i64"
           }
         ]
       }
@@ -719,8 +729,20 @@
         "kind": "struct",
         "fields": [
           {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "description",
+            "type": "string"
+          },
+          {
             "name": "goal_amount",
             "type": "u64"
+          },
+          {
+            "name": "duration",
+            "type": "i64"
           },
           {
             "name": "state",
@@ -751,8 +773,20 @@
         "kind": "struct",
         "fields": [
           {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "description",
+            "type": "string"
+          },
+          {
             "name": "goal_amount",
             "type": "u64"
+          },
+          {
+            "name": "duration",
+            "type": "i64"
           }
         ]
       }

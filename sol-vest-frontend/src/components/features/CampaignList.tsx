@@ -1,68 +1,38 @@
 import { useSolVest } from '../../hooks/useSolVest';
-import { Card } from '../ui/Card';
-import { Target, Activity } from 'lucide-react';
+import { CampaignCard } from './CampaignCard'; // Убедитесь, что путь импорта верный
 
 export const CampaignList = () => {
     const { campaigns, isLoading } = useSolVest();
 
-    if (isLoading) return <div className="text-center text-slate-500 animate-pulse">Загрузка проектов...</div>;
+    if (isLoading) {
+        return (
+            <div className="flex justify-center items-center py-20">
+                <div className="text-slate-500 animate-pulse flex items-center gap-2">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"/>
+                    Загрузка проектов...
+                </div>
+            </div>
+        );
+    }
 
-    if (campaigns.length === 0) return <div className="text-center text-slate-500">Пока нет активных проектов</div>;
+    if (!campaigns || campaigns.length === 0) {
+        return (
+            <div className="text-center py-20 border border-dashed border-slate-800 rounded-xl bg-slate-900/30">
+                <p className="text-slate-400">Пока нет активных проектов</p>
+                <p className="text-slate-600 text-sm mt-2">Станьте первым, кто создаст кампанию!</p>
+            </div>
+        );
+    }
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {campaigns.map((c) => {
-                const data = c.account;
-                const raised = data.raisedAmount.toNumber() / 1_000_000;
-                const goal = data.totalGoal.toNumber() / 1_000_000;
-                const progress = Math.min((raised / goal) * 100, 100);
-                const status = Object.keys(data.state)[0];
-
-                return (
-                    <Card key={c.publicKey.toString()} className="hover:border-blue-500/50 transition-colors">
-                        <div className="flex justify-between items-start mb-4">
-                            <span className="text-xs font-mono text-slate-500 bg-slate-950 px-2 py-1 rounded">
-                                {c.publicKey.toString().slice(0, 8)}...
-                            </span>
-                            <span className={`text-xs font-bold px-2 py-1 rounded uppercase ${
-                                status === 'active' ? 'bg-green-900/30 text-green-400' : 'bg-yellow-900/30 text-yellow-400'
-                            }`}>
-                                {status}
-                            </span>
-                        </div>
-
-                        <div className="space-y-4">
-                            <div>
-                                <div className="flex justify-between text-sm mb-1 text-slate-400">
-                                    <span>Собрано</span>
-                                    <span>{progress.toFixed(1)}%</span>
-                                </div>
-                                <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                                    <div 
-                                        className="h-full bg-blue-500 rounded-full transition-all duration-1000" 
-                                        style={{ width: `${progress}%` }}
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4 text-sm">
-                                <div className="bg-slate-950 p-3 rounded-lg">
-                                    <div className="flex items-center gap-2 text-slate-400 mb-1">
-                                        <Target size={14} /> Цель
-                                    </div>
-                                    <div className="font-semibold">{goal.toLocaleString()} USDC</div>
-                                </div>
-                                <div className="bg-slate-950 p-3 rounded-lg">
-                                    <div className="flex items-center gap-2 text-slate-400 mb-1">
-                                        <Activity size={14} /> Этап
-                                    </div>
-                                    <div className="font-semibold">{data.milestoneIdx + 1} из {data.milestones.length}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </Card>
-                );
-            })}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+            {campaigns.map((c) => (
+                <CampaignCard 
+                    key={c.publicKey.toString()} 
+                    publicKey={c.publicKey.toString()} 
+                    account={c.account} 
+                />
+            ))}
         </div>
     );
 };
