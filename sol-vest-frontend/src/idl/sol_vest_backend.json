@@ -1,5 +1,5 @@
 {
-  "address": "G4nTun1PpGPed7qGkchBGFf4LJkYohExFCaDVeBVZEen",
+  "address": "5hFs3AJwBVw4W8XjKTKKDUHsth3ZWGtYSDYdvknqzJpZ",
   "metadata": {
     "name": "sol_vest_backend",
     "version": "0.1.0",
@@ -161,6 +161,10 @@
         }
       ],
       "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
         {
           "name": "total_goal",
           "type": "u64"
@@ -400,6 +404,34 @@
           "writable": true
         },
         {
+          "name": "protocol",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "creator_token_account",
+          "writable": true
+        },
+        {
+          "name": "fee_destination",
+          "writable": true
+        },
+        {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         },
@@ -433,14 +465,16 @@
           "writable": true
         },
         {
-          "name": "creator",
-          "signer": true,
-          "relations": [
-            "campaign"
-          ]
+          "name": "signer",
+          "signer": true
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "evidence",
+          "type": "string"
+        }
+      ]
     },
     {
       "name": "vote",
@@ -622,6 +656,11 @@
       "code": 6010,
       "name": "MilestoneExpired",
       "msg": "Milestone deadline passed."
+    },
+    {
+      "code": 6011,
+      "name": "DeadlineNotPassed",
+      "msg": "Milestone deadline has not passed yet."
     }
   ],
   "types": [
@@ -630,6 +669,10 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "name",
+            "type": "string"
+          },
           {
             "name": "creator",
             "type": "pubkey"
@@ -763,6 +806,10 @@
           {
             "name": "vote_deadline",
             "type": "i64"
+          },
+          {
+            "name": "evidence",
+            "type": "string"
           }
         ]
       }

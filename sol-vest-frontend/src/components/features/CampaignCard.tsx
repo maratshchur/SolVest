@@ -2,17 +2,19 @@ import { type FC, useState } from 'react';
 import { Card } from '../ui/Card';
 import { 
     CheckCircle2, Clock, XCircle, PlayCircle, Lock, ChevronRight, 
-    ThumbsUp, ThumbsDown, AlertTriangle, Timer, UserCheck
+    ThumbsUp, ThumbsDown, AlertTriangle, Timer, UserCheck, 
+    Link as LinkIcon, ExternalLink, Flag, Play, CheckCheck, Loader2,
+    Undo2, AlertOctagon
 } from 'lucide-react';
 import { InvestModal } from './InvestModal';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useSolVest } from '../../hooks/useSolVest';
 import { PublicKey } from '@solana/web3.js';
 
-// Хелпер для определения статуса
-// В Anchor enum приходит в виде объекта: { funding: {} } или { active: {} }
+// Хелпер для конфигурации цветов статуса
 const getStateConfig = (stateObj: any) => {
-    const key = Object.keys(stateObj)[0].toLowerCase();
+    // Anchor возвращает enum как объект: { funding: {} }
+    const key = stateObj ? Object.keys(stateObj)[0].toLowerCase() : 'unknown';
     
     switch (key) {
         case 'funding':
@@ -30,45 +32,71 @@ const getStateConfig = (stateObj: any) => {
 
 export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account, publicKey }) => {
     const { publicKey: userKey } = useWallet();
-    const { submitMilestone, vote, isSubmitting, isVoting } = useSolVest();
+    const { 
+        submitMilestone, 
+        vote, 
+        finalizeMilestone, 
+        claimRefund,
+        isSubmitting, 
+        isVoting, 
+        isFinalizing,
+        isRefunding
+    } = useSolVest();
     
+    // Стейты UI
     const [isInvestModalOpen, setIsInvestModalOpen] = useState(false);
+    const [isSubmissionMode, setIsSubmissionMode] = useState(false);
+    const [evidenceLink, setEvidenceLink] = useState('');
 
-    // Данные кампании
+    // --- ПАРСИНГ ДАННЫХ ИЗ БЛОКЧЕЙНА ---
     const raisedAmount = account.raisedAmount ? account.raisedAmount.toNumber() / 1_000_000 : 0;
     const totalGoal = account.totalGoal ? account.totalGoal.toNumber() / 1_000_000 : 0;
+    const progressPercent = Math.min((raisedAmount / totalGoal) * 100, 100);
+    
     const milestones = account.milestones;
     const currentMilestoneIdx = account.milestoneIdx; 
     const currentMilestone = milestones[currentMilestoneIdx];
     
-    // Определение ролей и состояния
     const isCreator = userKey && account.creator.toString() === userKey.toString();
-    const stateKey = Object.keys(account.state)[0].toLowerCase(); // funding, active, failed, completed
+    const stateKey = Object.keys(account.state)[0].toLowerCase();
     
-    // Логика текущего этапа (если проект активен)
-    // Milestone State: 0 = Pending, 1 = Voting, 2 = Completed
-    // В JS это приходит как объект { pending: {} }, { voting: {} } и т.д.
+    // Статус текущего этапа (Pending / Voting / Completed)
     const milestoneStateKey = currentMilestone ? Object.keys(currentMilestone.state)[0].toLowerCase() : null;
     const isVotingPhase = milestoneStateKey === 'voting';
-    const isPendingPhase = milestoneStateKey === 'pending';
-
-    // Проверка дедлайна (для принудительного запуска голосования)
-    // current_milestone_deadline - это timestamp (unix seconds)
-    const deadline = account.currentMilestoneDeadline ? account.currentMilestoneDeadline.toNumber() : 0;
+    
+    // Тайминги
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const isDeadlinePassed = nowSeconds > deadline;
+    const workDeadline = account.currentMilestoneDeadline ? account.currentMilestoneDeadline.toNumber() : 0;
+    const isWorkDeadlinePassed = nowSeconds > workDeadline;
+    
+    // ИСПРАВЛЕНИЕ: Логика проверки дедлайна голосования
+    const voteDeadline = currentMilestone?.voteDeadline ? currentMilestone.voteDeadline.toNumber() : 0;
+    // Если voteDeadline == 0, значит данные еще не обновились или дедлайн не установлен -> Считаем, что время НЕ вышло
+    const isVoteDeadlinePassed = voteDeadline > 0 && nowSeconds > voteDeadline;
 
-    // Хендлеры
+    // --- ХЕНДЛЕРЫ ---
+
+    // 1. Сдача этапа
     const handleSubmitMilestone = async () => {
+        if (!evidenceLink.trim()) {
+            alert("Пожалуйста, укажите ссылку на отчет (GitHub, Video, Docs).");
+            return;
+        }
         try {
-            await submitMilestone({ campaignKey: new PublicKey(publicKey) });
-            alert("Голосование запущено!");
-        } catch (e) {
+            await submitMilestone({ 
+                campaignKey: new PublicKey(publicKey),
+                evidence: evidenceLink 
+            });
+            setIsSubmissionMode(false);
+            setEvidenceLink('');
+            alert("Этап сдан! Голосование запущено.");
+        } catch (e: any) {
             console.error(e);
-            alert("Ошибка при запуске этапа");
+            alert("Ошибка: " + e.message);
         }
     };
 
+    // 2. Голосование
     const handleVote = async (voteFor: boolean) => {
         try {
             await vote({ 
@@ -76,18 +104,45 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                 voteFor, 
                 milestoneIdx: currentMilestoneIdx 
             });
-            alert("Голос принят!");
-        } catch (e) {
+            alert("Ваш голос учтен!");
+        } catch (e: any) {
             console.error(e);
-            alert("Ошибка голосования (возможно, вы уже голосовали или не являетесь инвестором)");
+            alert(e.message || "Ошибка голосования");
         }
     };
 
-    // Рендер прогресса голосования
+    // 3. Финализация
+    const handleFinalize = async () => {
+        try {
+            await finalizeMilestone({ 
+                campaignKey: new PublicKey(publicKey),
+                creatorKey: account.creator 
+            });
+            alert("Итоги подведены! Статус обновлен.");
+        } catch (e: any) {
+            console.error(e);
+            alert("Ошибка финализации: " + e.message);
+        }
+    };
+
+    // 4. Возврат средств
+    const handleRefund = async () => {
+        try {
+            await claimRefund({ campaignKey: new PublicKey(publicKey) });
+            alert("Средства успешно возвращены на ваш кошелек!");
+        } catch (e: any) {
+            console.error(e);
+            if (e.message && e.message.includes("Account does not exist")) {
+                alert("Ошибка: У вас нет вклада в этом проекте или средства уже возвращены.");
+            } else {
+                alert("Ошибка возврата: " + e.message);
+            }
+        }
+    };
+
+    // Рендер статистики голосования
     const renderVotingStats = () => {
         if (!currentMilestone) return null;
-        
-        // Получаем голоса (с учетом децималов USDC, т.к. голоса весят по сумме вклада)
         const votesFor = currentMilestone.votesFor ? currentMilestone.votesFor.toNumber() / 1_000_000 : 0;
         const votesAgainst = currentMilestone.votesAgainst ? currentMilestone.votesAgainst.toNumber() / 1_000_000 : 0;
         const totalVotes = votesFor + votesAgainst;
@@ -105,18 +160,17 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                     <div className="bg-green-500 transition-all duration-500" style={{ width: `${percentFor}%` }} />
                     <div className="bg-red-500 transition-all duration-500" style={{ width: `${percentAgainst}%` }} />
                 </div>
-                <div className="text-center text-[10px] text-slate-500 mt-1">
-                    Всего голосов: {totalVotes.toFixed(0)} (Вес голоса = USDC)
-                </div>
+                <div className="text-center text-[10px] text-slate-500 mt-1">Всего голосов: {totalVotes.toFixed(0)} (Вес = USDC)</div>
             </div>
         );
     };
 
     const config = getStateConfig(account.state);
     const StatusIcon = config.icon;
-
-    // Форматирование даты
-    const formatDate = (unix: number) => new Date(unix * 1000).toLocaleDateString();
+    const formatDate = (unix: number) => {
+        if (!unix) return "Не определено";
+        return new Date(unix * 1000).toLocaleDateString() + " " + new Date(unix * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    };
 
     return (
         <>
@@ -128,7 +182,9 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                             <StatusIcon size={12} />
                             {config.label}
                         </div>
-                        <h3 className="text-xl font-bold text-white">Project #{publicKey.slice(0, 6)}...</h3>
+                        <h3 className="text-xl font-bold text-white tracking-tight">
+                            {account.name || `Project #${publicKey.slice(0, 6)}`}
+                        </h3>
                     </div>
                     <div className="text-right">
                         <div className="text-2xl font-bold text-white">{raisedAmount.toLocaleString()} USDC</div>
@@ -136,15 +192,15 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                     </div>
                 </div>
 
-                {/* --- MAIN PROGRESS --- */}
+                {/* --- TOTAL PROGRESS BAR --- */}
                 <div className="w-full bg-slate-800 h-1.5 rounded-full mb-6 overflow-hidden">
                     <div 
                         className="bg-gradient-to-r from-blue-600 to-cyan-400 h-full transition-all duration-500" 
-                        style={{ width: `${Math.min((raisedAmount / totalGoal) * 100, 100)}%` }}
+                        style={{ width: `${progressPercent}%` }}
                     />
                 </div>
 
-                {/* --- MILESTONES & ACTIVE STAGE LOGIC --- */}
+                {/* --- АКТИВНЫЙ ЭТАП (Основная логика) --- */}
                 <div className="space-y-4">
                     <div className="flex justify-between items-end">
                         <h4 className="text-sm font-medium text-slate-400">Текущий статус</h4>
@@ -155,10 +211,9 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                         )}
                     </div>
 
-                    {/* Если проект АКТИВЕН, показываем детальную панель текущего этапа */}
                     {stateKey === 'active' && currentMilestone && (
                         <div className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 relative overflow-hidden">
-                            {/* Индикатор фазы */}
+                            {/* Индикатор слева */}
                             <div className={`absolute top-0 left-0 w-1 h-full ${isVotingPhase ? 'bg-yellow-500' : 'bg-blue-500'}`} />
                             
                             <div className="pl-3">
@@ -168,7 +223,7 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                                 <div className="flex items-center gap-4 text-xs text-slate-500 mb-3">
                                     <div className="flex items-center gap-1">
                                         <Timer size={14} /> 
-                                        {isVotingPhase ? 'Идет голосование' : `Дедлайн: ${formatDate(deadline)}`}
+                                        {isVotingPhase ? 'Идет голосование' : `Дедлайн: ${formatDate(workDeadline)}`}
                                     </div>
                                     <div className="flex items-center gap-1">
                                         <UserCheck size={14} /> 
@@ -176,56 +231,112 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                                     </div>
                                 </div>
 
-                                {/* ЛОГИКА ГОЛОСОВАНИЯ (UI) */}
+                                {/* ССЫЛКА НА ДОКАЗАТЕЛЬСТВО (Видна всем в фазе голосования) */}
+                                {isVotingPhase && currentMilestone.evidence && (
+                                    <div className="mb-4 bg-slate-900/80 p-3 rounded-lg border border-slate-700/50 flex items-center justify-between">
+                                        <div className="flex items-center gap-2 text-slate-300 text-sm">
+                                            <LinkIcon size={16} className="text-blue-400"/>
+                                            <span className="font-medium">Отчет о выполнении:</span>
+                                        </div>
+                                        <a 
+                                            href={currentMilestone.evidence.startsWith('http') ? currentMilestone.evidence : `https://${currentMilestone.evidence}`} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                            className="text-xs flex items-center gap-1 text-blue-400 hover:text-blue-300 underline underline-offset-4"
+                                        >
+                                            Открыть <ExternalLink size={12} />
+                                        </a>
+                                    </div>
+                                )}
+
+                                {/* --- ЛОГИКА ДЕЙСТВИЙ --- */}
+                                
+                                {/* 1. ФАЗА ГОЛОСОВАНИЯ */}
                                 {isVotingPhase ? (
                                     <div className="animate-in fade-in duration-300">
                                         {renderVotingStats()}
                                         
-                                        <div className="flex gap-2 mt-3">
-                                            <button 
-                                                onClick={() => handleVote(true)}
-                                                disabled={isVoting}
-                                                className="flex-1 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/50 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2"
-                                            >
-                                                <ThumbsUp size={14} /> ОДОБРИТЬ
-                                            </button>
-                                            <button 
-                                                onClick={() => handleVote(false)}
-                                                disabled={isVoting}
-                                                className="flex-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/50 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2"
-                                            >
-                                                <ThumbsDown size={14} /> ОТКЛОНИТЬ
-                                            </button>
-                                        </div>
+                                        {!isVoteDeadlinePassed ? (
+                                            // Если время ЕЩЕ НЕ ВЫШЛО (или равно 0) - даем возможность голосовать
+                                            <div className="flex gap-2 mt-3">
+                                                <button onClick={() => handleVote(true)} disabled={isVoting} className="flex-1 bg-green-600/20 hover:bg-green-600/30 text-green-400 border border-green-600/50 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2">
+                                                    <ThumbsUp size={14} /> ОДОБРИТЬ
+                                                </button>
+                                                <button onClick={() => handleVote(false)} disabled={isVoting} className="flex-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/50 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2">
+                                                    <ThumbsDown size={14} /> ОТКЛОНИТЬ
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            // Если время ВЫШЛО - финализируем
+                                            <div className="mt-3">
+                                                <div className="text-center text-xs text-yellow-500 mb-2 font-medium">
+                                                    Время голосования истекло.
+                                                </div>
+                                                <button 
+                                                    onClick={handleFinalize}
+                                                    disabled={isFinalizing}
+                                                    className="w-full bg-purple-600 hover:bg-purple-500 text-white py-2 rounded-lg text-sm font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-purple-900/20"
+                                                >
+                                                    {isFinalizing ? <Loader2 className="animate-spin" /> : <Flag size={16} />}
+                                                    {isFinalizing ? 'Подведение итогов...' : 'Подвести итоги этапа'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        
                                         <p className="text-[10px] text-center text-slate-500 mt-2">
-                                            Голосование завершится {formatDate(currentMilestone.voteDeadline ? currentMilestone.voteDeadline.toNumber() : 0)}
+                                            {isVoteDeadlinePassed ? "Голосование закрыто" : `Голосование до ${formatDate(voteDeadline)}`}
                                         </p>
                                     </div>
                                 ) : (
-                                    // ЛОГИКА ВЫПОЛНЕНИЯ (PENDING)
+                                    // 2. ФАЗА РАБОТЫ (Pending)
                                     <div className="mt-3">
-                                        {/* Кнопка сдачи этапа */}
-                                        {(isCreator || isDeadlinePassed) && (
-                                            <button
-                                                onClick={handleSubmitMilestone}
-                                                disabled={isSubmitting}
-                                                className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition ${
-                                                    isDeadlinePassed 
-                                                        ? 'bg-yellow-600 hover:bg-yellow-500 text-white shadow-lg shadow-yellow-900/20' // Стиль для форс-мажора
-                                                        : 'bg-blue-600 hover:bg-blue-500 text-white' // Стиль для автора
-                                                }`}
-                                            >
-                                                {isSubmitting ? 'Обработка...' : isDeadlinePassed ? (
-                                                    <><AlertTriangle size={16} /> Дедлайн прошел: Начать голосование</>
+                                        {(isCreator || isWorkDeadlinePassed) && (
+                                            <>
+                                                {isSubmissionMode ? (
+                                                    <div className="bg-slate-900 p-3 rounded-lg border border-slate-700 animate-in fade-in zoom-in-95 duration-200">
+                                                        <label className="text-xs text-slate-400 mb-1 block">Ссылка на отчет (GitHub/YouTube/Docs):</label>
+                                                        <div className="flex gap-2">
+                                                            <input 
+                                                                type="text"
+                                                                value={evidenceLink}
+                                                                onChange={(e) => setEvidenceLink(e.target.value)}
+                                                                placeholder="https://..."
+                                                                className="flex-1 bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                                                            />
+                                                            <button 
+                                                                onClick={handleSubmitMilestone}
+                                                                disabled={isSubmitting}
+                                                                className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded text-sm font-bold"
+                                                            >
+                                                                {isSubmitting ? '...' : 'OK'}
+                                                            </button>
+                                                            <button 
+                                                                onClick={() => setIsSubmissionMode(false)}
+                                                                className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1.5 rounded text-sm"
+                                                            >
+                                                                X
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                 ) : (
-                                                    <><CheckCircle2 size={16} /> Сдать работу и начать голосование</>
+                                                    <button
+                                                        onClick={() => setIsSubmissionMode(true)}
+                                                        className={`w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition ${
+                                                            isWorkDeadlinePassed 
+                                                                ? 'bg-orange-600 hover:bg-orange-500 text-white shadow-lg shadow-orange-900/20' 
+                                                                : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                                        }`}
+                                                    >
+                                                        {isWorkDeadlinePassed ? <Play size={16} /> : <CheckCheck size={16} />}
+                                                        {isWorkDeadlinePassed ? 'Дедлайн прошел: Запустить голосование' : 'Сдать работу и начать голосование'}
+                                                    </button>
                                                 )}
-                                            </button>
+                                            </>
                                         )}
                                         
-                                        {!isCreator && !isDeadlinePassed && (
-                                            <div className="text-center text-xs text-slate-500 py-2 bg-slate-900/50 rounded">
-                                                Ожидание сдачи работы автором...
+                                        {!isCreator && !isWorkDeadlinePassed && (
+                                            <div className="text-center text-xs text-slate-500 py-2 bg-slate-900/50 rounded flex flex-col gap-1">
+                                                <span>В работе... Ожидание отчета от автора</span>
                                             </div>
                                         )}
                                     </div>
@@ -234,13 +345,10 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                         </div>
                     )}
 
-                    {/* Список всех этапов (свернутый/компактный) */}
+                    {/* Список остальных этапов */}
                     <div className="grid gap-1 max-h-40 overflow-y-auto pr-1 custom-scrollbar">
                         {milestones.map((m: any, idx: number) => {
-                            const isCurrent = stateKey === 'active' && idx === currentMilestoneIdx;
-                            // Пропускаем детальную отрисовку текущего, так как он выше крупно
-                            if (isCurrent) return null;
-
+                            if (stateKey === 'active' && idx === currentMilestoneIdx) return null;
                             const isDone = idx < currentMilestoneIdx || stateKey === 'completed';
                             return (
                                 <div key={idx} className={`flex justify-between items-center p-2 rounded text-xs ${isDone ? 'bg-slate-900 text-slate-500' : 'bg-slate-950 text-slate-600'}`}>
@@ -255,29 +363,48 @@ export const CampaignCard: FC<{ account: any, publicKey: string }> = ({ account,
                     </div>
                 </div>
                 
-                {/* --- FOOTER ACTIONS --- */}
+                {/* --- FOOTER (Funding Actions) --- */}
                 <div className="mt-5 pt-4 border-t border-slate-800 flex gap-3">
                     {stateKey === 'funding' && (
                          <button 
-                             onClick={() => setIsInvestModalOpen(true)}
+                             onClick={() => setIsInvestModalOpen(true)} 
                              className="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm py-2.5 rounded-lg font-medium transition shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2"
                          >
                              Инвестировать <ChevronRight size={16} />
                          </button>
                      )}
-                     {(stateKey === 'completed' || stateKey === 'failed') && (
-                         <div className="w-full text-center text-sm text-slate-500 py-1">
-                             Кампания {stateKey === 'completed' ? 'успешно завершена' : 'остановлена'}
+                     
+                     {stateKey === 'completed' && (
+                         <div className="w-full text-center text-sm py-2 font-medium text-green-500 bg-green-900/10 rounded-lg border border-green-900/30 flex items-center justify-center gap-2">
+                             <CheckCircle2 size={16} /> Кампания успешно завершена
+                         </div>
+                     )}
+
+                     {/* Кнопка возврата средств при статусе Failed */}
+                     {stateKey === 'failed' && (
+                         <div className="w-full space-y-3">
+                             <div className="text-center text-xs text-red-400 bg-red-900/10 py-2 rounded border border-red-900/30 flex items-center justify-center gap-2">
+                                 <AlertOctagon size={14} /> Проект остановлен голосованием
+                             </div>
+                             
+                             <button 
+                                 onClick={handleRefund}
+                                 disabled={isRefunding}
+                                 className="w-full bg-slate-800 hover:bg-red-900/40 text-white border border-slate-700 hover:border-red-500/50 text-sm py-2.5 rounded-lg font-medium transition flex items-center justify-center gap-2 group"
+                             >
+                                 {isRefunding ? <Loader2 className="animate-spin" size={16} /> : <Undo2 size={16} className="text-slate-400 group-hover:text-red-400 transition-colors"/>}
+                                 {isRefunding ? 'Возврат...' : 'Вернуть мои вложения'}
+                             </button>
                          </div>
                      )}
                 </div>
             </Card>
 
             <InvestModal 
-                isOpen={isInvestModalOpen}
-                onClose={() => setIsInvestModalOpen(false)}
-                campaignPublicKey={publicKey}
-                campaignName={`Project ${publicKey.slice(0, 4)}...`}
+                isOpen={isInvestModalOpen} 
+                onClose={() => setIsInvestModalOpen(false)} 
+                campaignPublicKey={publicKey} 
+                campaignName={account.name || `Project ${publicKey.slice(0, 4)}...`} 
             />
         </>
     );

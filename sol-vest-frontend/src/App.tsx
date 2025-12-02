@@ -3,6 +3,7 @@ import { CreateCampaignForm } from './components/features/CreateCampaignForm';
 import { CampaignList } from './components/features/CampaignList';
 import { Users, Rocket } from 'lucide-react';
 import { useAnchorWallet } from '@solana/wallet-adapter-react';
+import { WalletBalance } from './components/ui/WalletBalance'; 
 
 function App() {
   const wallet = useAnchorWallet();
@@ -18,6 +19,9 @@ function App() {
             <h1 className="text-xl font-bold bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
               Sol-Vest
             </h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <WalletBalance />
           </div>
         </div>
       </header>
