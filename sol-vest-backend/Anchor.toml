@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-sol_vest_backend = "H14JDTx8fkS9TktMfyuuwVgr1RxoTw6C3AvDuXz1Tvq6"
+sol_vest_backend = "5hFs3AJwBVw4W8XjKTKKDUHsth3ZWGtYSDYdvknqzJpZ"
 
 [registry]
 url = "https://api.apr.dev"
