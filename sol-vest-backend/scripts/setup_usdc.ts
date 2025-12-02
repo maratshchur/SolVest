@@ -3,55 +3,107 @@ import {
     createMint, 
     createAssociatedTokenAccount, 
     mintTo, 
-    getAssociatedTokenAddress 
+    getOrCreateAssociatedTokenAccount 
 } from "@solana/spl-token";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+
+// =================================================================
+// ⚙️ НАСТРОЙКИ
+// =================================================================
+
+// Список кошельков, которые нужно "зарядить" (SOL + USDC)
+// Вставьте сюда адреса из вашего Phantom
+const TEST_WALLETS = [
+    "8Nr9YhUSTPiSb523XStvzStK5qN3ZzFAACsKuYyPGSC8", // Аккаунт 1
+    "H481owLbBayb6MEqtJ5QVCGu1s9svGyhmVhkWdCWMZLR", // Аккаунт 2 (если есть)
+    // "Адрес_Аккаунта_3", 
+];
+
+const SOL_AMOUNT = 100;      // Сколько SOL дать каждому
+const USDC_AMOUNT = 50_000;  // Сколько USDC дать каждому
+
+// =================================================================
 
 async function main() {
-    // Подключаемся к локальной сети
+    // Подключение к Localhost (берется из переменных окружения или конфига Anchor)
     const provider = anchor.AnchorProvider.env();
     anchor.setProvider(provider);
     const connection = provider.connection;
+    
+    // Админский кошелек (id.json), который все оплачивает
     const payer = (provider.wallet as anchor.Wallet).payer;
 
-    console.log("🛠 Настройка окружения на Localnet...");
-    console.log("🔑 Мой кошелек:", payer.publicKey.toString());
+    console.log("🚀 Запуск автоматической настройки Localnet...");
+    console.log("🔑 Admin Wallet:", payer.publicKey.toString());
 
-    // 1. Создаем токен "Fake USDC" (6 знаков после запятой)
+    // ---------------------------------------------------------
+    // 1. Создаем токен USDC (Mint)
+    // ---------------------------------------------------------
+    console.log("\n1️⃣  Создаем фейковый USDC...");
     const usdcMint = await createMint(
         connection,
-        payer,             // Плательщик комиссии
-        payer.publicKey,   // Владелец Mint (может печатать токены)
-        null,              // Freeze authority (не нужен)
-        6                  // Decimals (КАК У НАСТОЯЩЕГО USDC)
+        payer,             // Плательщик
+        payer.publicKey,   // Mint Authority (кто может печатать)
+        null,
+        6                  // 6 знаков (как у настоящего USDC)
     );
 
-    console.log("---------------------------------------------------");
     console.log("✅ USDC Mint создан:", usdcMint.toString());
-    console.log("👉 ВСТАВЬТЕ ЭТОТ АДРЕС В КОНСТАНТЫ ФРОНТЕНДА!");
-    console.log("---------------------------------------------------");
+    console.log("⚠️  НЕ ЗАБУДЬТЕ ОБНОВИТЬ ЭТОТ АДРЕС НА ФРОНТЕНДЕ!");
 
-    // 2. Создаем токен-аккаунт (кошелек для токенов) для себя
-    const myTokenAccount = await createAssociatedTokenAccount(
-        connection,
-        payer,
-        usdcMint,
-        payer.publicKey
-    );
+    // ---------------------------------------------------------
+    // 2. Обрабатываем список тестовых кошельков
+    // ---------------------------------------------------------
+    console.log("\n2️⃣  Раздаем токены тестовым кошелькам...");
 
-    console.log("💳 Мой USDC аккаунт:", myTokenAccount.toString());
+    for (const addressStr of TEST_WALLETS) {
+        try {
+            const userPubkey = new PublicKey(addressStr);
+            console.log(`\n👤 Обработка: ${addressStr.slice(0, 6)}...`);
 
-    // 3. Печатаем себе 10,000 "USDC"
-    await mintTo(
-        connection,
-        payer,
-        usdcMint,
-        myTokenAccount,
-        payer,
-        10000 * 1000000 // 10,000 USDC * 6 decimals
-    );
+            // --- A. Раздаем SOL ---
+            console.log(`   -> Airdrop ${SOL_AMOUNT} SOL...`);
+            const signature = await connection.requestAirdrop(
+                userPubkey, 
+                SOL_AMOUNT * LAMPORTS_PER_SOL
+            );
+            // Ждем подтверждения транзакции
+            const latestBlockHash = await connection.getLatestBlockhash();
+            await connection.confirmTransaction({
+                blockhash: latestBlockHash.blockhash,
+                lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+                signature: signature,
+            });
 
-    console.log("💰 Успешно напечатано 10,000 Fake USDC на ваш счет.");
+            // --- B. Создаем USDC аккаунт (ATA) ---
+            console.log(`   -> Создание Token Account...`);
+            const userTokenAccount = await getOrCreateAssociatedTokenAccount(
+                connection,
+                payer,          // Админ платит за создание аккаунта (ренту)
+                usdcMint,
+                userPubkey      // Владелец аккаунта - тестовый юзер
+            );
+
+            // --- C. Печатаем USDC ---
+            console.log(`   -> Минт ${USDC_AMOUNT} USDC...`);
+            await mintTo(
+                connection,
+                payer,
+                usdcMint,
+                userTokenAccount.address,
+                payer,          // Админ подписывает печать
+                USDC_AMOUNT * 1_000_000 // Учитываем decimals
+            );
+            
+            console.log(`   ✅ Готово!`);
+
+        } catch (error) {
+            console.error(`   ❌ Ошибка с кошельком ${addressStr}:`, error);
+        }
+    }
+
+    console.log("\n🎉 Настройка завершена успешно!");
+    console.log(`Mint Address для копирования: ${usdcMint.toString()}`);
 }
 
 main().then(
@@ -61,3 +113,5 @@ main().then(
         process.exit(-1);
     }
 );
+
+// ANCHOR_PROVIDER_URL="http://127.0.0.1:8899" ANCHOR_WALLET="$HOME/.config/solana/id.json" npx ts-node scripts/setup_usdc.ts
