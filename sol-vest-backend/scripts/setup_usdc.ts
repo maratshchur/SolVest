@@ -14,9 +14,9 @@ import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 // Список кошельков, которые нужно "зарядить" (SOL + USDC)
 // Вставьте сюда адреса из вашего Phantom
 const TEST_WALLETS = [
-    "8Nr9YhUSTPiSb523XStvzStK5qN3ZzFAACsKuYyPGSC8", // Аккаунт 1
-    "H481owLbBayb6MEqtJ5QVCGu1s9svGyhmVhkWdCWMZLR", // Аккаунт 2 (если есть)
-    // "Адрес_Аккаунта_3", 
+    "5KP7KFySmgGprrb7q2ZmxRmQgfNDHhQUdoA5JX3gX484", // Аккаунт 1
+    "8Nr9YhUSTPiSb523XStvzStK5qN3ZzFAACsKuYyPGSC8", // Аккаунт 2 (если есть)
+"BaZQuQv8vg51oMEwXSoNyzoLFKryzRwgFUN77DU8EqVF"
 ];
 
 const SOL_AMOUNT = 100;      // Сколько SOL дать каждому

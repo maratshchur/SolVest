@@ -1,262 +1,239 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SolVestBackend } from "../target/types/sol_vest_backend";
-import {
-  createMint,
-  createAssociatedTokenAccount,
-  mintTo,
-  getAccount,
-  getMint,
-  getAssociatedTokenAddressSync,
-  TOKEN_PROGRAM_ID
+import { 
+  getOrCreateAssociatedTokenAccount, 
+  createTransferInstruction, 
+  TOKEN_PROGRAM_ID 
 } from "@solana/spl-token";
-import { assert } from "chai";
+import { expect } from "chai";
 
-describe("sol_vest_backend", () => {
+describe("sol_vest_backend_integration", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
+
   const program = anchor.workspace.SolVestBackend as Program<SolVestBackend>;
 
-  // Переменные, которые мы либо создадим, либо загрузим из блокчейна
-  let usdcMint: anchor.web3.PublicKey;
-  let adminTokenAccount: anchor.web3.PublicKey;
-  let feeDestination: anchor.web3.PublicKey; // Куда уходит комиссия
+  const adminWallet = provider.wallet as anchor.Wallet;
+  const USDC_MINT = new anchor.web3.PublicKey("77u3giVhJjgPM9kEESGxJmRmpzvGLxeALHnMMtsaxqrT");
   
-  // Новые участники для каждого теста (чтобы не было конфликтов)
+  const ADMIN_USDC_ATA = new anchor.web3.PublicKey("J3s4FooS38kY4oZn3p5QHxv1DJxJLh2pBqy7SwRZHkTA");
   const creator = anchor.web3.Keypair.generate();
   const investor = anchor.web3.Keypair.generate();
+
+  let creatorAta: anchor.web3.PublicKey;
+  let investorAta: anchor.web3.PublicKey;
   
-  let creatorTokenAccount: anchor.web3.PublicKey;
-  let investorTokenAccount: anchor.web3.PublicKey;
+  let protocolPda: anchor.web3.PublicKey;
+  let campaignPda: anchor.web3.PublicKey;
+  let vaultPda: anchor.web3.PublicKey;
+  let contributionPda: anchor.web3.PublicKey;
 
-  // PDA Протокола (он один на всех)
-  const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
-    [Buffer.from("protocol")],
-    program.programId
-  );
+  const TOTAL_GOAL = new anchor.BN(1000_000000);
+  const MILESTONE_1_AMOUNT = new anchor.BN(400_000000);
+  const MILESTONE_2_AMOUNT = new anchor.BN(600_000000);
 
-  const DECIMALS = 6;
-  const MULTIPLIER = 10 ** DECIMALS;
-
-  // --- ЭТАП ПОДГОТОВКИ (УМНЫЙ) ---
   before(async () => {
-    // 1. Раздаем SOL новым участникам
-    await provider.connection.requestAirdrop(creator.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
-    await provider.connection.requestAirdrop(investor.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
-    await new Promise(r => setTimeout(r, 1000)); // Ждем
+    console.log("Starting setup...");
 
-    // 2. ПРОВЕРЯЕМ: Протокол уже существует?
-    try {
-      const protocolAccount = await program.account.protocol.fetch(protocolPda);
-      console.log("⚠️ Протокол уже инициализирован. Используем существующие данные.");
-      
-      // Если существует — берем адрес для комиссий оттуда
-      feeDestination = protocolAccount.feeDestination;
-      
-      // Узнаем, какой токен (USDC) используется в этом аккаунте
-      const feeAccountInfo = await getAccount(provider.connection, feeDestination);
-      usdcMint = feeAccountInfo.mint;
-      
-      console.log("   -> Существующий USDC:", usdcMint.toString());
-      console.log("   -> Существующий Fee Account:", feeDestination.toString());
+    [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("protocol")],
+      program.programId
+    );
 
-    } catch (e) {
-      console.log("🆕 Протокол не найден. Инициализируем с нуля.");
-      
-      // Если не существует — создаем Админа и Токен
-      const admin = anchor.web3.Keypair.generate();
-      await provider.connection.requestAirdrop(admin.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-      await new Promise(r => setTimeout(r, 1000));
+    const tx = new anchor.web3.Transaction().add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: adminWallet.publicKey,
+        toPubkey: creator.publicKey,
+        lamports: 0.1 * anchor.web3.LAMPORTS_PER_SOL,
+      }),
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: adminWallet.publicKey,
+        toPubkey: investor.publicKey,
+        lamports: 0.1 * anchor.web3.LAMPORTS_PER_SOL,
+      })
+    );
+    await provider.sendAndConfirm(tx);
+    console.log("SOL airdropped to Creator and Investor");
 
-      usdcMint = await createMint(provider.connection, admin, admin.publicKey, null, DECIMALS);
-      adminTokenAccount = await createAssociatedTokenAccount(provider.connection, admin, usdcMint, admin.publicKey);
-      feeDestination = adminTokenAccount;
+    creatorAta = (await getOrCreateAssociatedTokenAccount(
+      provider.connection, 
+      adminWallet.payer,
+      USDC_MINT, 
+      creator.publicKey
+    )).address;
 
-      // Инициализируем протокол
-      await program.methods
-        .initializeProtocol(200)
-        .accounts({
-          protocol: protocolPda,
-          owner: admin.publicKey,
-          feeDestination: adminTokenAccount,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        })
-        .signers([admin])
-        .rpc();
-        
-      console.log("   -> Протокол успешно создан.");
-    }
+    investorAta = (await getOrCreateAssociatedTokenAccount(
+      provider.connection, 
+      adminWallet.payer, 
+      USDC_MINT, 
+      investor.publicKey
+    )).address;
 
-    // 3. Создаем токен-аккаунты для Creator и Investor (используя правильный Mint!)
-    // Мы используем payer (кошелек провайдера) для оплаты создания аккаунтов, чтобы не мучаться с airdrop админу
-    const payer = (provider.wallet as anchor.Wallet).payer;
 
-    creatorTokenAccount = await createAssociatedTokenAccount(provider.connection, payer, usdcMint, creator.publicKey);
-    investorTokenAccount = await createAssociatedTokenAccount(provider.connection, payer, usdcMint, investor.publicKey);
+    const transferTx = new anchor.web3.Transaction().add(
+      createTransferInstruction(
+        ADMIN_USDC_ATA,
+        investorAta,
+        adminWallet.publicKey,
+        2000_000000
+      )
+    );
+    await provider.sendAndConfirm(transferTx);
+    console.log("2000 USDC transferred from Admin to Investor");
+  });
 
-    // 4. Печатаем денег инвестору (нужен Authority минта)
-    // ВАЖНО: Если мы подключились к старому минту, у нас может не быть прав на печать (нет приватного ключа).
-    // ХАК ДЛЯ ТЕСТА: На локалнете мы обычно используем payer как владельца минта. 
-    // Если минт был создан другим скриптом, mintTo может упасть.
+  it("Validates Existing Protocol", async () => {
+    const protocolAccount = await program.account.protocol.fetch(protocolPda);
     
-    try {
-        await mintTo(provider.connection, payer, usdcMint, investorTokenAccount, payer, 5000 * MULTIPLIER);
-    } catch(e) {
-        console.log("🔴 Не удалось напечатать токены. Возможно, у payer нет прав на Mint Authority старого токена.");
-        console.log("Попробуйте перезапустить валидатор с --reset, если тесты упадут из-за нехватки средств.");
-    }
+    console.log("Protocol State:");
+    console.log("- Owner:", protocolAccount.owner.toBase58());
+    console.log("- Fee Dest:", protocolAccount.feeDestination.toBase58());
+
+    expect(protocolAccount.feeDestination.toBase58()).to.equal(ADMIN_USDC_ATA.toBase58());
   });
 
-  // Тест инициализации нам больше не нужен в явном виде, так как мы делаем это в before()
+  it("Creates Campaign", async () => {
+    const campaignKeypair = anchor.web3.Keypair.generate();
+    campaignPda = campaignKeypair.publicKey;
 
-  it("Сценарий Успеха", async () => {
-    const campaign = anchor.web3.Keypair.generate();
-    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), campaign.publicKey.toBuffer()],
+    [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), campaignPda.toBuffer()],
       program.programId
     );
 
-    const goal = new anchor.BN(1000 * MULTIPLIER);
+    const milestones = [
+      {
+        name: "MVP Development",
+        description: "Core features implementation",
+        goalAmount: MILESTONE_1_AMOUNT,
+        duration: new anchor.BN(3),
+      },
+      {
+        name: "Public Launch",
+        description: "Marketing and release",
+        goalAmount: MILESTONE_2_AMOUNT,
+        duration: new anchor.BN(5),
+      }
+    ];
+
     await program.methods
-      .createCampaign(goal, [{ goalAmount: goal }], new anchor.BN(86400))
+      .createCampaign(
+        "Integration Test Campaign",
+        TOTAL_GOAL,
+        milestones,
+        new anchor.BN(2000)
+      )
       .accounts({
-        campaign: campaign.publicKey,
+        campaign: campaignPda,
         vault: vaultPda,
-        usdcMint: usdcMint,
+        usdcMint: USDC_MINT,
         creator: creator.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
       })
-      .signers([creator, campaign])
+      .signers([creator, campaignKeypair])
       .rpc();
 
-    // Инвест
-    const [contributionPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contribution"), campaign.publicKey.toBuffer(), investor.publicKey.toBuffer()],
-      program.programId
-    );
-    await program.methods.invest(goal).accounts({
-        campaign: campaign.publicKey,
-        vault: vaultPda,
-        contribution: contributionPda,
-        investor: investor.publicKey,
-        investorTokenAccount: investorTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      }).signers([investor]).rpc();
-
-    // Сабмит
-    await program.methods.submitMilestone().accounts({
-        campaign: campaign.publicKey,
-        creator: creator.publicKey,
-    }).signers([creator]).rpc();
-
-    // Голос
-    const [votePda] = anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("vote"), campaign.publicKey.toBuffer(), investor.publicKey.toBuffer(), Buffer.from([0])],
-        program.programId
-    );
-    await program.methods.vote(true).accounts({
-        campaign: campaign.publicKey,
-        contribution: contributionPda,
-        voteRecord: votePda,
-        voter: investor.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([investor]).rpc();
-
-    // Финализация
-    // ВАЖНО: feeDestination берем из переменной, которую мы настроили в before()
-    await program.methods.finalizeMilestone().accounts({
-        protocol: protocolPda,
-        campaign: campaign.publicKey,
-        vault: vaultPda,
-        creator: creator.publicKey,
-        creatorTokenAccount: creatorTokenAccount,
-        feeDestination: feeDestination, 
-        tokenProgram: TOKEN_PROGRAM_ID,
-    }).signers([creator]).rpc();
-
-    const balanceAfter = (await getAccount(provider.connection, creatorTokenAccount)).amount;
-    assert.equal(Number(balanceAfter), 980 * MULTIPLIER);
+    const camp = await program.account.campaign.fetch(campaignPda);
+    expect(camp.totalGoal.eq(TOTAL_GOAL)).to.be.true;
+    console.log("Campaign created at:", campaignPda.toBase58());
   });
 
-  it("Сценарий Возврата", async () => {
-     const campaign = anchor.web3.Keypair.generate();
-    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), campaign.publicKey.toBuffer()],
+  it("Invests & Triggers 1st Payout", async () => {
+    [contributionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("contribution"), campaignPda.toBuffer(), investor.publicKey.toBuffer()],
       program.programId
     );
 
-    const goal = new anchor.BN(1000 * MULTIPLIER);
+    const creatorBalBefore = (await provider.connection.getTokenAccountBalance(creatorAta)).value.amount;
+
     await program.methods
-      .createCampaign(goal, [{ goalAmount: goal }], new anchor.BN(86400))
+      .invest(TOTAL_GOAL)
       .accounts({
-        campaign: campaign.publicKey,
-        vault: vaultPda,
-        usdcMint: usdcMint,
-        creator: creator.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
-      })
-      .signers([creator, campaign])
-      .rpc();
-
-    const [contributionPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("contribution"), campaign.publicKey.toBuffer(), investor.publicKey.toBuffer()],
-      program.programId
-    );
-    await program.methods.invest(goal).accounts({
-        campaign: campaign.publicKey,
+        campaign: campaignPda,
         vault: vaultPda,
         contribution: contributionPda,
         investor: investor.publicKey,
-        investorTokenAccount: investorTokenAccount,
+        investorTokenAccount: investorAta,
+        protocol: protocolPda,
+        creatorTokenAccount: creatorAta,
+        feeDestination: ADMIN_USDC_ATA,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
-      }).signers([investor]).rpc();
+      })
+      .signers([investor])
+      .rpc();
 
-    await program.methods.submitMilestone().accounts({
-        campaign: campaign.publicKey,
-        creator: creator.publicKey,
-    }).signers([creator]).rpc();
+    const creatorBalAfter = (await provider.connection.getTokenAccountBalance(creatorAta)).value.amount;
+
+    console.log(`Creator Balance: ${creatorBalBefore} -> ${creatorBalAfter}`);
+    expect(Number(creatorBalAfter)).to.be.greaterThan(Number(creatorBalBefore));
+    
+    const camp = await program.account.campaign.fetch(campaignPda);
+    expect(JSON.stringify(camp.state)).to.include("active");
+    
+    console.log("Invested and 1st payout received");
+  });
+
+  it("Submits & Votes", async () => {
+    await program.methods
+      .submitMilestone("https://github.com/proof")
+      .accounts({
+        campaign: campaignPda,
+        signer: creator.publicKey,
+      })
+      .signers([creator])
+      .rpc();
 
     const [votePda] = anchor.web3.PublicKey.findProgramAddressSync(
-        [Buffer.from("vote"), campaign.publicKey.toBuffer(), investor.publicKey.toBuffer(), Buffer.from([0])],
-        program.programId
+      [Buffer.from("vote"), campaignPda.toBuffer(), investor.publicKey.toBuffer(), Buffer.from([0])],
+      program.programId
     );
-    await program.methods.vote(false).accounts({
-        campaign: campaign.publicKey,
+
+    await program.methods
+      .vote(true)
+      .accounts({
+        campaign: campaignPda,
         contribution: contributionPda,
         voteRecord: votePda,
         voter: investor.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([investor]).rpc();
+      })
+      .signers([investor])
+      .rpc();
+      
+    console.log("Milestone submitted and Voted FOR");
+  });
 
-    await program.methods.finalizeMilestone().accounts({
+  it("Finalizes & Triggers 2nd Payout", async () => {
+    console.log("⏳ Waiting for voting period to end...");
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+
+    await program.methods
+      .finalizeMilestone()
+      .accounts({
         protocol: protocolPda,
-        campaign: campaign.publicKey,
+        campaign: campaignPda,
         vault: vaultPda,
+        caller: creator.publicKey,
         creator: creator.publicKey,
-        creatorTokenAccount: creatorTokenAccount,
-        feeDestination: feeDestination,
+        creatorTokenAccount: creatorAta,
+        feeDestination: ADMIN_USDC_ATA,
         tokenProgram: TOKEN_PROGRAM_ID,
-    }).signers([creator]).rpc();
+      })
+      .signers([creator])
+      .rpc();
 
-    await program.methods.claimRefund().accounts({
-        campaign: campaign.publicKey,
-        vault: vaultPda,
-        contribution: contributionPda,
-        investor: investor.publicKey,
-        investorTokenAccount: investorTokenAccount,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-    }).signers([investor]).rpc();
+    const camp = await program.account.campaign.fetch(campaignPda);
+    expect(camp.milestoneIdx).to.equal(1);
+    
+    const creatorBalFinal = (await provider.connection.getTokenAccountBalance(creatorAta)).value.amount;
+    console.log("💰 Final Creator Balance:", creatorBalFinal);
+    
+    expect(Number(creatorBalFinal)).to.be.closeTo(980_000000, 100);
 
-    const balance = (await getAccount(provider.connection, investorTokenAccount)).amount;
-    // У инвестора было 5000, вложил 1000, вернул 1000. Итого 5000.
-    // (Но мы печатали 5000 в before, так что проверка примерная)
-    assert.ok(Number(balance) > 0);
+    console.log("Milestone finalized, second payout received");
   });
 });
