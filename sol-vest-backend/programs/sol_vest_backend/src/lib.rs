@@ -133,6 +133,9 @@ pub mod sol_vest_backend {
             campaign.milestones[idx].evidence = "DEADLINE MISSED: Force started by investor".to_string();
         }
 
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp < campaign.current_milestone_deadline, CampaignError::MilestoneExpired);
+
         campaign.milestones[idx].state = MilestoneState::Voting;
         campaign.milestones[idx].vote_deadline = clock.unix_timestamp + campaign.voting_duration;
 
@@ -170,6 +173,9 @@ pub mod sol_vest_backend {
         let idx = campaign.milestone_idx as usize;
 
         require!(campaign.milestones[idx].state == MilestoneState::Voting, CampaignError::MilestoneNotVoting);
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp >= campaign.milestones[idx].vote_deadline, CampaignError::VotingNotEnded);
+
         let clock = Clock::get()?;
         require!(clock.unix_timestamp >= campaign.milestones[idx].vote_deadline, CampaignError::VotingNotEnded);
 

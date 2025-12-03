@@ -1,27 +1,26 @@
 import { useAnchorWallet, useConnection } from '@solana/wallet-adapter-react';
 import { Program, AnchorProvider, BN, web3 } from '@coral-xyz/anchor';
-import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { PublicKey, SystemProgram, ComputeBudgetProgram } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
-// Убедитесь, что путь к файлу верный
 import idl from '../idl/sol_vest_backend.json';
 
-const PROGRAM_ID = new PublicKey("G4nTun1PpGPed7qGkchBGFf4LJkYohExFCaDVeBVZEen");
-const USDC_MINT = new PublicKey("ALPX3kHJEYVLyzrPyYrWYS38kFXoYzh1ZgT21FqvQfa");
+const PROGRAM_ID = new PublicKey("5hFs3AJwBVw4W8XjKTKKDUHsth3ZWGtYSDYdvknqzJpZ");
+const USDC_MINT = new PublicKey("8yxM88Sn4z7xwJJ5brodvSXEumLEgNbAcxkMcGBdxxM3");
 
-// Интерфейс для входных данных этапа (упрощенный для UI)
 export interface MilestoneInput {
     name: string;
     description: string;
-    amount: number; // В USDC (не в минимальных единицах)
-    duration: number; // В секундах (или днях, см. логику конвертации ниже)
+    amount: number;
+    duration: number;
 }
 
 interface CreateCampaignArgs {
+    name: string;
     goal: number;
     milestones: MilestoneInput[];
-    fundraisingDuration: number; // В секундах
+    fundraisingDuration: number;
 }
 
 export const useSolVest = () => {
@@ -29,17 +28,20 @@ export const useSolVest = () => {
     const { connection } = useConnection();
     const queryClient = useQueryClient();
 
-    // 1. Инициализация программы с фиксом для Vite
     const program = useMemo(() => {
         if (!wallet) return null;
         
-        const provider = new AnchorProvider(connection, wallet, AnchorProvider.defaultOptions());
-        
+        const provider = new AnchorProvider(
+            connection, 
+            wallet, 
+            { commitment: 'confirmed', preflightCommitment: 'confirmed', skipPreflight: true }
+        );
 
-        return new Program(idl, provider);
+        const idlObject = (idl as any).default ? (idl as any).default : idl;
+        
+        return new Program(idlObject, provider);
     }, [connection, wallet]);
 
-    // 2. Query: Получение всех кампаний
     const campaignsQuery = useQuery({
         queryKey: ['campaigns'],
         queryFn: async () => {
@@ -50,64 +52,67 @@ export const useSolVest = () => {
         refetchInterval: 5000,
     });
 
-    // 3. Mutation: Создание кампании
     const createCampaignMutation = useMutation({
-        mutationFn: async ({ goal, milestones, fundraisingDuration }: CreateCampaignArgs) => {
+        mutationFn: async ({ name, goal, milestones, fundraisingDuration }: CreateCampaignArgs) => {
             if (!program || !wallet) throw new Error("Wallet not connected");
 
             const campaignKeypair = web3.Keypair.generate();
             
-            // Находим PDA для Vault
             const [vaultPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("vault"), campaignKeypair.publicKey.toBuffer()],
                 PROGRAM_ID
             );
 
-            // --- Подготовка данных ---
-            
-            // 1. Общая цель (u64)
-            const totalGoalBn = new BN(goal * 1_000_000); // USDC 6 decimals
+            const totalGoalBn = new BN(goal * 1_000_000);
 
-            // 2. Вектор этапов (Vec<MilestoneInput>)
-            // В IDL: name(string), description(string), goal_amount(u64), duration(i64)
             const milestonesVec = milestones.map(m => ({
                 name: m.name,
                 description: m.description,
-                goalAmount: new BN(m.amount * 1_000_000), // convert to atomic units
-                duration: new BN(m.duration) // Seconds
+                goalAmount: new BN(m.amount * 1_000_000),
+                duration: new BN(m.duration)
             }));
 
-            // 3. Длительность сбора средств (i64)
             const fundraisingDurationBn = new BN(fundraisingDuration);
 
-            console.log("Creating Campaign:", {
-                pubkey: campaignKeypair.publicKey.toString(),
-                goal: totalGoalBn.toString(),
-                milestonesCount: milestonesVec.length,
-                duration: fundraisingDurationBn.toString()
+            console.log("Starting createCampaign transaction...");
+
+            const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ 
+                units: 1_000_000
             });
 
-            // Вызов метода контракта
-            // Аргументы строго по IDL: total_goal, milestones, fundraising_duration
+            const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({ 
+                microLamports: 1000 
+            });
+
             const tx = await program.methods
                 .createCampaign(
+                    name,
                     totalGoalBn, 
                     milestonesVec, 
                     fundraisingDurationBn
                 )
                 .accounts({
-                    // Имена аккаунтов (Anchor преобразует snake_case из IDL в camelCase)
                     campaign: campaignKeypair.publicKey,
                     vault: vaultPda,
-                    usdcMint: USDC_MINT,     // IDL: usdc_mint
+                    usdcMint: USDC_MINT,
                     creator: wallet.publicKey,
-                    systemProgram: SystemProgram.programId, // IDL: system_program
-                    tokenProgram: TOKEN_PROGRAM_ID,         // IDL: token_program
-                    rent: web3.SYSVAR_RENT_PUBKEY,          // IDL: rent
+                    systemProgram: SystemProgram.programId,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    rent: web3.SYSVAR_RENT_PUBKEY,
                 })
+                .preInstructions([modifyComputeUnits, addPriorityFee])
                 .signers([campaignKeypair])
                 .rpc();
             
+            console.log("Transaction signature:", tx);
+            
+            const latestBlockhash = await connection.getLatestBlockhash();
+            await connection.confirmTransaction({
+                signature: tx,
+                blockhash: latestBlockhash.blockhash,
+                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            }, 'confirmed');
+
             return tx;
         },
         onSuccess: () => {
@@ -115,12 +120,268 @@ export const useSolVest = () => {
         },
     });
 
+    const investMutation = useMutation({
+        mutationFn: async ({ campaignKey, amount }: { campaignKey: PublicKey; amount: number }) => {
+            if (!program || !wallet) throw new Error("Кошелек не подключен");
+
+            console.log("🚀 Starting Investment...");
+
+            const amountBn = new BN(amount * 1_000_000);
+
+            const [vaultPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("vault"), campaignKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const [contributionPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("contribution"), campaignKey.toBuffer(), wallet.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const investorTokenAccount = getAssociatedTokenAddressSync(
+                USDC_MINT,
+                wallet.publicKey
+            );
+
+            const [protocolPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("protocol")],
+                PROGRAM_ID
+            );
+
+            const protocolData = await program.account.protocol.fetch(protocolPda);
+            const feeDestination = protocolData.feeDestination;
+
+            const campaignData = await program.account.campaign.fetch(campaignKey);
+            const creatorKey = campaignData.creator;
+
+            const creatorTokenAccount = getAssociatedTokenAddressSync(
+                USDC_MINT,
+                creatorKey
+            );
+
+            console.log("Investment details:", {
+                protocol: protocolPda.toString(),
+                feeDest: feeDestination.toString(),
+                creatorATA: creatorTokenAccount.toString()
+            });
+
+            const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 });
+
+            const tx = await program.methods
+                .invest(amountBn)
+                .accounts({
+                    campaign: campaignKey,
+                    vault: vaultPda,
+                    contribution: contributionPda,
+                    investor: wallet.publicKey,
+                    investorTokenAccount: investorTokenAccount,
+                    protocol: protocolPda,
+                    creatorTokenAccount: creatorTokenAccount,
+                    feeDestination: feeDestination,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    systemProgram: SystemProgram.programId,
+                })
+                .preInstructions([modifyComputeUnits])
+                .rpc();
+
+            const latestBlockhash = await connection.getLatestBlockhash();
+            await connection.confirmTransaction({
+                signature: tx,
+                blockhash: latestBlockhash.blockhash,
+                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            }, 'confirmed');
+
+            return tx;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+        },
+    });
+
+    const submitMilestoneMutation = useMutation({
+        mutationFn: async ({ campaignKey, evidence }: { campaignKey: PublicKey, evidence: string }) => {
+            if (!program || !wallet) throw new Error("Кошелек не подключен");
+
+            console.log("Submitting milestone with evidence:", evidence);
+
+            const tx = await program.methods
+                .submitMilestone(evidence)
+                .accounts({
+                    campaign: campaignKey,
+                    creator: wallet.publicKey,
+                })
+                .rpc();
+            
+            await connection.confirmTransaction(tx, 'confirmed');
+            return tx;
+        },
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+    });
+
+    const voteMutation = useMutation({
+        mutationFn: async ({ campaignKey, voteFor, milestoneIdx }: { campaignKey: PublicKey, voteFor: boolean, milestoneIdx: number }) => {
+            if (!program || !wallet) throw new Error("Кошелек не подключен");
+
+            const [contributionPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("contribution"), campaignKey.toBuffer(), wallet.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const [voteRecordPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("vote"),            
+                    campaignKey.toBuffer(),         
+                    wallet.publicKey.toBuffer(),    
+                    Buffer.from([milestoneIdx])    
+                ],
+                PROGRAM_ID
+            );
+
+            const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 });
+
+            const tx = await program.methods
+                .vote(voteFor)
+                .accounts({
+                    campaign: campaignKey,
+                    contribution: contributionPda,
+                    voteRecord: voteRecordPda,
+                    voter: wallet.publicKey,
+                    systemProgram: SystemProgram.programId,
+                })
+                .preInstructions([modifyComputeUnits])
+                .rpc();
+
+            const latestBlockhash = await connection.getLatestBlockhash();
+            await connection.confirmTransaction({
+                signature: tx,
+                blockhash: latestBlockhash.blockhash,
+                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            }, 'confirmed');
+
+            return tx;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+        }
+    });
+
+    const finalizeMilestoneMutation = useMutation({
+        mutationFn: async ({ campaignKey, creatorKey }: { campaignKey: PublicKey, creatorKey: PublicKey }) => {
+            if (!program || !wallet) throw new Error("Кошелек не подключен");
+
+            console.log("🏁 Finalizing milestone...");
+
+            const [protocolPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("protocol")],
+                PROGRAM_ID
+            );
+
+            const [vaultPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("vault"), campaignKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const protocolAccount = await program.account.protocol.fetch(protocolPda);
+            const feeDestination = protocolAccount.feeDestination;
+
+            const creatorTokenAccount = getAssociatedTokenAddressSync(
+                USDC_MINT,
+                creatorKey
+            );
+
+            const tx = await program.methods
+                .finalizeMilestone()
+                .accounts({
+                    protocol: protocolPda,
+                    campaign: campaignKey,
+                    vault: vaultPda,
+                    caller: wallet.publicKey, 
+                    creator: creatorKey,      
+                    creatorTokenAccount: creatorTokenAccount, 
+                    feeDestination: feeDestination, 
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .rpc();
+
+            const latestBlockhash = await connection.getLatestBlockhash();
+            await connection.confirmTransaction({
+                signature: tx,
+                blockhash: latestBlockhash.blockhash,
+                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+            }, 'confirmed');
+
+            return tx;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+        }
+    });
+
+    const claimRefundMutation = useMutation({
+        mutationFn: async ({ campaignKey }: { campaignKey: PublicKey }) => {
+            if (!program || !wallet) throw new Error("Кошелек не подключен");
+
+            console.log("💸 Claiming refund...");
+
+            const [vaultPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("vault"), campaignKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const [contributionPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("contribution"), campaignKey.toBuffer(), wallet.publicKey.toBuffer()],
+                PROGRAM_ID
+            );
+
+            const investorTokenAccount = getAssociatedTokenAddressSync(
+                USDC_MINT,
+                wallet.publicKey
+            );
+
+            const tx = await program.methods
+                .claimRefund()
+                .accounts({
+                    campaign: campaignKey,
+                    vault: vaultPda,
+                    contribution: contributionPda,
+                    investor: wallet.publicKey,
+                    investorTokenAccount: investorTokenAccount,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            await connection.confirmTransaction(tx, 'confirmed');
+            return tx;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] });
+        }
+    });
+
     return {
         program,
         campaigns: campaignsQuery.data || [],
         isLoading: campaignsQuery.isLoading,
+
         createCampaign: createCampaignMutation.mutateAsync,
         isCreating: createCampaignMutation.isPending,
+        
+        invest: investMutation.mutateAsync,
+        isInvesting: investMutation.isPending,
+        
+        submitMilestone: submitMilestoneMutation.mutateAsync,
+        isSubmitting: submitMilestoneMutation.isPending,
+        
+        vote: voteMutation.mutateAsync,
+        isVoting: voteMutation.isPending,
+
+        finalizeMilestone: finalizeMilestoneMutation.mutateAsync,
+        isFinalizing: finalizeMilestoneMutation.isPending,
+
+        claimRefund: claimRefundMutation.mutateAsync,
+        isRefunding: claimRefundMutation.isPending,
+
         error: campaignsQuery.error || createCampaignMutation.error
     };
 };
