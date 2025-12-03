@@ -9,12 +9,8 @@ import {
     TOKEN_PROGRAM_ID 
 } from "@solana/spl-token";
 
-// ====================================================
-// ⚙️ НАСТРОЙКИ
-// ====================================================
 const USDC_MINT_ADDRESS = new PublicKey("8yxM88Sn4z7xwJJ5brodvSXEumLEgNbAcxkMcGBdxxM3"); 
 const PROTOCOL_FEE = 200; 
-// ====================================================
 
 async function main() {
     const provider = anchor.AnchorProvider.env();
@@ -24,23 +20,19 @@ async function main() {
 
     console.log("🚀 Инициализация протокола Sol-Vest...");
 
-    // 1. Находим PDA
     const [protocolPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("protocol")],
         program.programId
     );
     console.log("📍 Protocol PDA:", protocolPda.toString());
 
-    // 2. Вычисляем адрес ATA
     const feeDestination = getAssociatedTokenAddressSync(
         USDC_MINT_ADDRESS,
         wallet.publicKey
     );
     console.log("💰 Адрес для комиссий (ATA):", feeDestination.toString());
 
-    // =========================================================
-    // 🛠 ИСПРАВЛЕНИЕ: Проверяем и создаем ATA, если его нет
-    // =========================================================
+
     const accountInfo = await provider.connection.getAccountInfo(feeDestination);
     
     if (!accountInfo) {
@@ -66,16 +58,13 @@ async function main() {
     } else {
         console.log("✅ Токен-аккаунт уже существует.");
     }
-    // =========================================================
 
     try {
-        // 3. Вызываем метод контракта
         const tx = await program.methods
             .initializeProtocol(PROTOCOL_FEE)
             .accounts({
                 owner: wallet.publicKey,
                 feeDestination: feeDestination,
-                // systemProgram не обязателен, Anchor сам подставит, но можно оставить
             })
             .rpc();
 
