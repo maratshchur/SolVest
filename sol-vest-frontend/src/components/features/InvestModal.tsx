@@ -20,14 +20,13 @@ export const InvestModal = ({ isOpen, onClose, campaignPublicKey, campaignName }
 
     const handleInvest = async () => {
         if (!amount || Number(amount) <= 0) return;
-        
         try {
             await invest({
                 campaignKey: new PublicKey(campaignPublicKey),
                 amount: Number(amount)
             });
             setAmount('');
-            onClose(); // Закрываем окно после успеха
+            onClose();
             alert(`Успешно инвестировано ${amount} USDC!`);
         } catch (e) {
             console.error(e);
@@ -38,8 +37,6 @@ export const InvestModal = ({ isOpen, onClose, campaignPublicKey, campaignName }
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <Card className="w-full max-w-md bg-slate-900 border-slate-800 shadow-2xl relative">
-                
-                {/* Кнопка закрытия */}
                 <button 
                     onClick={onClose}
                     className="absolute right-4 top-4 text-slate-500 hover:text-white transition"
@@ -75,7 +72,6 @@ export const InvestModal = ({ isOpen, onClose, campaignPublicKey, campaignName }
                             * С вашего баланса также спишется небольшая комиссия в SOL (rent) за создание счета инвестора.
                         </p>
                     </div>
-
                     <div className="flex gap-3">
                         <button 
                             onClick={onClose}

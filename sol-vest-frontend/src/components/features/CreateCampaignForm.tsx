@@ -3,32 +3,22 @@ import { useSolVest } from '../../hooks/useSolVest';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { 
-    PlusCircle, 
-    Trash2, 
-    Loader2, 
-    Calendar, 
-    Type, 
-    FileText, 
-    DollarSign, 
-    Rocket,
-    Layers,
-    Layout
+    PlusCircle, Trash2, Loader2, Calendar, Type, 
+    Link as LinkIcon, DollarSign, Rocket, Layers, Layout
 } from 'lucide-react';
 
 export const CreateCampaignForm = () => {
     const { createCampaign, isCreating } = useSolVest();
     
-    // 1. Добавлено состояние для имени кампании
     const [campaignName, setCampaignName] = useState('');
-    
     const [milestones, setMilestones] = useState([
-        { name: 'Этап', description: 'Описание этапа', amount: '100', duration: '10' } 
+        { name: '', description: '', amount: '', duration: '' } 
     ]);
     const [votingDuration, setVotingDuration] = useState('');
 
     const totalGoal = milestones.reduce((acc, m) => acc + (Number(m.amount) || 0), 0);
 
-    const addMilestone = () => setMilestones([...milestones, { name: 'Этап', description: 'Описание этапа', amount: '100', duration: '10'  }]);
+    const addMilestone = () => setMilestones([...milestones, { name: '', description: '', amount: '', duration: '' }]);
     
     const removeMilestone = (index: number) => {
         if (milestones.length > 1) setMilestones(milestones.filter((_, i) => i !== index));
@@ -49,18 +39,17 @@ export const CreateCampaignForm = () => {
 
         try {
             await createCampaign({
-                name: campaignName, // 2. Передаем имя
+                name: campaignName,
                 goal: totalGoal,
                 milestones: milestones.map(m => ({
                     name: m.name || `Stage`,
-                    description: m.description || "No description provided",
+                    description: m.description || "#", 
                     amount: Number(m.amount),
                     duration: Number(m.duration) * 86400 
                 })),
                 fundraisingDuration: Number(votingDuration) * 86400 
             });
             
-            // Сброс формы
             setCampaignName('');
             setMilestones([{ name: '', description: '', amount: '', duration: '' }]);
             setVotingDuration('');
@@ -80,13 +69,10 @@ export const CreateCampaignForm = () => {
                     </div>
                     <div>
                         <h2 className="text-2xl font-bold text-white tracking-tight">Создание проекта</h2>
-                        <p className="text-slate-400 text-sm mt-1">Опишите идею, этапы финансирования и укажите цели</p>
+                        <p className="text-slate-400 text-sm mt-1">Опишите идею, этапы финансирования и прикрепите ссылки на ТЗ</p>
                     </div>
                 </div>
-
                 <div className="p-6 space-y-8">
-                    
-                    {/* --- НОВОЕ ПОЛЕ: Название проекта --- */}
                     <div className="space-y-2">
                         <label className="text-sm font-semibold text-slate-300 flex items-center gap-2">
                             <Layout size={16} className="text-blue-500"/>
@@ -103,7 +89,6 @@ export const CreateCampaignForm = () => {
                             />
                         </div>
                     </div>
-
                     <div className="space-y-4">
                         <div className="flex items-center justify-between mb-2">
                             <label className="text-sm font-semibold text-slate-300 flex items-center gap-2">
@@ -114,13 +99,11 @@ export const CreateCampaignForm = () => {
                                 {milestones.length} {milestones.length === 1 ? 'этап' : 'этапа'}
                             </span>
                         </div>
-                        
                         {milestones.map((milestone, index) => (
                             <div key={index} className="relative group bg-slate-900/50 rounded-xl border border-slate-800 hover:border-slate-600 transition-all duration-300 p-5">
                                 <div className="absolute -left-3 -top-3 w-8 h-8 flex items-center justify-center bg-slate-800 text-white text-sm font-bold rounded-lg border border-slate-700 shadow-md z-10">
                                     {index + 1}
                                 </div>
-                                
                                 {milestones.length > 1 && (
                                     <button 
                                         onClick={() => removeMilestone(index)}
@@ -130,7 +113,6 @@ export const CreateCampaignForm = () => {
                                         <Trash2 size={16} />
                                     </button>
                                 )}
-
                                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
                                     <div className="md:col-span-7 space-y-4">
                                         <div className="space-y-1.5">
@@ -145,21 +127,19 @@ export const CreateCampaignForm = () => {
                                                 />
                                             </div>
                                         </div>
-
                                         <div className="space-y-1.5">
-                                            <label className="text-xs text-slate-500 ml-1">Описание работ</label>
+                                            <label className="text-xs text-slate-500 ml-1">Ссылка на ТЗ / Описание (Google Docs, GitHub)</label>
                                             <div className="relative group/input">
-                                                <FileText className="absolute left-3 top-3 text-slate-500 group-focus-within/input:text-blue-400 transition-colors" size={18} />
+                                                <LinkIcon className="absolute left-3 top-3 text-slate-500 group-focus-within/input:text-blue-400 transition-colors" size={18} />
                                                 <input 
-                                                    className="w-full bg-slate-950 border border-slate-700 rounded-lg py-2.5 pl-10 pr-4 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-                                                    placeholder="Что будет сделано на этом этапе?" 
+                                                    className="w-full bg-slate-950 border border-slate-700 rounded-lg py-2.5 pl-10 pr-4 text-sm text-blue-400 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all underline decoration-blue-500/30"
+                                                    placeholder="https://..." 
                                                     value={milestone.description}
                                                     onChange={e => updateMilestone(index, 'description', e.target.value)}
                                                 />
                                             </div>
                                         </div>
                                     </div>
-
                                     <div className="md:col-span-5 flex flex-col gap-4 bg-slate-800/30 p-4 rounded-lg border border-slate-700/50">
                                         <div className="space-y-1.5">
                                             <label className="text-xs text-slate-400 ml-1 font-medium">Сумма (USDC)</label>
@@ -209,7 +189,7 @@ export const CreateCampaignForm = () => {
                             <div className="relative group/input">
                                 <Calendar className="absolute left-3 top-2.5 text-slate-500 group-focus-within/input:text-blue-400" size={18} />
                                 <input 
-                                    className="w-full bg-slate-950 border border-slate-600 rounded-lg py-2.5 pl-10 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
+                                    className="w-full bg-slate-950 border border-slate-600 rounded-lg py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                                     type="number" 
                                     value={votingDuration}
                                     onChange={e => setVotingDuration(e.target.value)}
@@ -217,7 +197,6 @@ export const CreateCampaignForm = () => {
                                 />
                             </div>
                         </div>
-
                         <div className="text-center md:text-right">
                             <span className="text-slate-400 text-xs uppercase tracking-wider font-semibold">Итоговая цель</span>
                             <div className="text-3xl font-bold text-white mt-1">
@@ -237,7 +216,7 @@ export const CreateCampaignForm = () => {
                                     <Loader2 className="animate-spin" /> 
                                     Отправка в блокчейн...
                                 </div>
-                            ) : '🚀 Опубликовать проект'}
+                            ) : 'Опубликовать проект'}
                         </Button>
                     </div>
                 </div>

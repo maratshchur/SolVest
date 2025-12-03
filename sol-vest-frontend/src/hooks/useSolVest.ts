@@ -7,8 +7,7 @@ import { useMemo } from 'react';
 import idl from '../idl/sol_vest_backend.json';
 
 const PROGRAM_ID = new PublicKey("5hFs3AJwBVw4W8XjKTKKDUHsth3ZWGtYSDYdvknqzJpZ");
-// Убедитесь, что USDC_MINT актуален
-const USDC_MINT = new PublicKey("77u3giVhJjgPM9kEESGxJmRmpzvGLxeALHnMMtsaxqrT");
+const USDC_MINT = new PublicKey("8yxM88Sn4z7xwJJ5brodvSXEumLEgNbAcxkMcGBdxxM3");
 
 export interface MilestoneInput {
     name: string;
@@ -18,7 +17,7 @@ export interface MilestoneInput {
 }
 
 interface CreateCampaignArgs {
-    name: string; // <--- Новое поле
+    name: string;
     goal: number;
     milestones: MilestoneInput[];
     fundraisingDuration: number;
@@ -38,7 +37,6 @@ export const useSolVest = () => {
             { commitment: 'confirmed', preflightCommitment: 'confirmed', skipPreflight: true }
         );
 
-        // Фикс для импорта JSON в Vite (если объект обернут в default)
         const idlObject = (idl as any).default ? (idl as any).default : idl;
         
         return new Program(idlObject, provider);
@@ -78,19 +76,17 @@ export const useSolVest = () => {
 
             console.log("Starting createCampaign transaction...");
 
-            // --- ОБЯЗАТЕЛЬНО ДЛЯ БОЛЬШИХ ДАННЫХ (строк) ---
             const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ 
-                units: 1_000_000 // Увеличиваем лимит, чтобы избежать out of memory
+                units: 1_000_000
             });
 
-            // Опционально: Приоритетная комиссия
             const addPriorityFee = ComputeBudgetProgram.setComputeUnitPrice({ 
                 microLamports: 1000 
             });
 
             const tx = await program.methods
                 .createCampaign(
-                    name, // <--- Передаем динамическое имя
+                    name,
                     totalGoalBn, 
                     milestonesVec, 
                     fundraisingDurationBn
@@ -104,7 +100,7 @@ export const useSolVest = () => {
                     tokenProgram: TOKEN_PROGRAM_ID,
                     rent: web3.SYSVAR_RENT_PUBKEY,
                 })
-                .preInstructions([modifyComputeUnits, addPriorityFee]) // <--- Раскомментировано
+                .preInstructions([modifyComputeUnits, addPriorityFee])
                 .signers([campaignKeypair])
                 .rpc();
             
@@ -132,7 +128,6 @@ export const useSolVest = () => {
 
             const amountBn = new BN(amount * 1_000_000);
 
-            // 1. Старые PDA (Vault, Contribution)
             const [vaultPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("vault"), campaignKey.toBuffer()],
                 PROGRAM_ID
@@ -148,24 +143,17 @@ export const useSolVest = () => {
                 wallet.publicKey
             );
 
-            // --- НОВАЯ ЛОГИКА ДЛЯ НОВЫХ АККАУНТОВ ---
-
-            // 2. Находим PDA протокола
             const [protocolPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("protocol")],
                 PROGRAM_ID
             );
 
-            // 3. Скачиваем данные Протокола, чтобы узнать fee_destination
-            // (Если протокол не инициализирован, это упадет с ошибкой "Account does not exist")
             const protocolData = await program.account.protocol.fetch(protocolPda);
             const feeDestination = protocolData.feeDestination;
 
-            // 4. Скачиваем данные Кампании, чтобы узнать кто Creator
             const campaignData = await program.account.campaign.fetch(campaignKey);
             const creatorKey = campaignData.creator;
 
-            // 5. Находим токен-аккаунт (ATA) Создателя
             const creatorTokenAccount = getAssociatedTokenAddressSync(
                 USDC_MINT,
                 creatorKey
@@ -177,7 +165,6 @@ export const useSolVest = () => {
                 creatorATA: creatorTokenAccount.toString()
             });
 
-            // Добавляем Compute Units
             const modifyComputeUnits = ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 });
 
             const tx = await program.methods
@@ -188,11 +175,9 @@ export const useSolVest = () => {
                     contribution: contributionPda,
                     investor: wallet.publicKey,
                     investorTokenAccount: investorTokenAccount,
-                    // --- НОВЫЕ АККАУНТЫ (CamelCase как требует Anchor) ---
                     protocol: protocolPda,
                     creatorTokenAccount: creatorTokenAccount,
                     feeDestination: feeDestination,
-                    // ----------------------------------------------------
                     tokenProgram: TOKEN_PROGRAM_ID,
                     systemProgram: SystemProgram.programId,
                 })
@@ -220,7 +205,7 @@ export const useSolVest = () => {
             console.log("Submitting milestone with evidence:", evidence);
 
             const tx = await program.methods
-                .submitMilestone(evidence) // <--- Передаем строку доказательства
+                .submitMilestone(evidence)
                 .accounts({
                     campaign: campaignKey,
                     creator: wallet.publicKey,
@@ -242,13 +227,12 @@ export const useSolVest = () => {
                 PROGRAM_ID
             );
 
-            // Правильная генерация PDA для u8
             const [voteRecordPda] = PublicKey.findProgramAddressSync(
                 [
-                    Buffer.from("vote"),             // 1. Исправлено с "vote_record" на "vote"
-                    campaignKey.toBuffer(),          // 2. Campaign Key
-                    wallet.publicKey.toBuffer(),     // 3. Voter Key (поменяли местами)
-                    Buffer.from([milestoneIdx])      // 4. Milestone Index (u8, в конце)
+                    Buffer.from("vote"),            
+                    campaignKey.toBuffer(),         
+                    wallet.publicKey.toBuffer(),    
+                    Buffer.from([milestoneIdx])    
                 ],
                 PROGRAM_ID
             );
@@ -287,39 +271,34 @@ export const useSolVest = () => {
 
             console.log("🏁 Finalizing milestone...");
 
-            // 1. Находим PDA протокола (там хранятся настройки и адрес для комиссии)
             const [protocolPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("protocol")],
                 PROGRAM_ID
             );
 
-            // 2. Находим PDA Vault кампании
             const [vaultPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("vault"), campaignKey.toBuffer()],
                 PROGRAM_ID
             );
 
-            // 3. Получаем данные аккаунта Протокола, чтобы узнать fee_destination
             const protocolAccount = await program.account.protocol.fetch(protocolPda);
             const feeDestination = protocolAccount.feeDestination;
 
-            // 4. Находим ATA Создателя (куда отправлять USDC, если этап принят)
             const creatorTokenAccount = getAssociatedTokenAddressSync(
                 USDC_MINT,
                 creatorKey
             );
 
-            // 5. Вызываем метод
             const tx = await program.methods
                 .finalizeMilestone()
                 .accounts({
                     protocol: protocolPda,
                     campaign: campaignKey,
                     vault: vaultPda,
-                    caller: wallet.publicKey, // Тот, кто нажимает кнопку (любой юзер)
-                    creator: creatorKey,      // Создатель проекта
-                    creatorTokenAccount: creatorTokenAccount, // ATA создателя
-                    feeDestination: feeDestination, // Кошелек админа протокола
+                    caller: wallet.publicKey, 
+                    creator: creatorKey,      
+                    creatorTokenAccount: creatorTokenAccount, 
+                    feeDestination: feeDestination, 
                     tokenProgram: TOKEN_PROGRAM_ID,
                 })
                 .rpc();
@@ -344,19 +323,16 @@ export const useSolVest = () => {
 
             console.log("💸 Claiming refund...");
 
-            // 1. PDA Vault (откуда забираем)
             const [vaultPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("vault"), campaignKey.toBuffer()],
                 PROGRAM_ID
             );
 
-            // 2. PDA Contribution (сколько нам должны)
             const [contributionPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("contribution"), campaignKey.toBuffer(), wallet.publicKey.toBuffer()],
                 PROGRAM_ID
             );
 
-            // 3. ATA Инвестора (куда отправляем)
             const investorTokenAccount = getAssociatedTokenAddressSync(
                 USDC_MINT,
                 wallet.publicKey
@@ -367,7 +343,7 @@ export const useSolVest = () => {
                 .accounts({
                     campaign: campaignKey,
                     vault: vaultPda,
-                    contribution: contributionPda, // При вызове этот аккаунт закроется, а рент вернется юзеру
+                    contribution: contributionPda,
                     investor: wallet.publicKey,
                     investorTokenAccount: investorTokenAccount,
                     tokenProgram: TOKEN_PROGRAM_ID,
