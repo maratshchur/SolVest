@@ -1,0 +1,35 @@
+Передеплой программы:
+
+1. Сгенерируйте новый ключ программы
+В терминале (в корне вашего проекта) выполните команду, которая перезапишет файл ключа новым:
+code
+Bash
+solana-keygen new -o target/deploy/sol_vest_backend-keypair.json --force
+(Флаг --force нужен, чтобы перезаписать старый файл).
+2. Узнайте новый адрес (Program ID)
+Выполните команду:
+code
+Bash
+solana address -k target/deploy/sol_vest_backend-keypair.json
+Скопируйте полученный адрес (например, 8Yx...).
+3. Обновите адрес в коде Rust
+Откройте файл programs/sol_vest_backend/src/lib.rs.
+Замените старый адрес в макросе declare_id!:
+code
+Rust
+// Вставьте сюда новый адрес
+declare_id!("НОВЫЙ_АДРЕС_КОТОРЫЙ_ВЫ_СКОПИРОВАЛИ");
+4. Обновите адрес в Anchor.toml
+Откройте файл Anchor.toml в корне проекта.
+Найдите секцию [programs.localnet] (или devnet) и замените адрес там:
+code
+Toml
+[programs.localnet]
+sol_vest_backend = "НОВЫЙ_АДРЕС_КОТОРЫЙ_ВЫ_СКОПИРОВАЛИ"
+5. Пересоберите и задеплойте
+Выполните команды по очереди:
+code
+Bash
+anchor build
+anchor deploy
+
